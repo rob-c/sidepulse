@@ -1,0 +1,5 @@
+off 90ms cosine
+3:#00FF66 180ms ease; 4:#00CCFF 180ms ease; 2:#FFFF00 180ms ease 80ms; 5:#004CFF 180ms ease 80ms
+1:#FF8800 180ms ease; 6:#8800FF 180ms ease; 0:#FF0044 180ms ease 80ms; 7:#FF00CC 180ms ease 80ms
+#FF0044 #FF8800 #FFFF00 #00FF66 #00CCFF #004CFF #8800FF #FF00CC 220ms ease
+off 320ms ease-out

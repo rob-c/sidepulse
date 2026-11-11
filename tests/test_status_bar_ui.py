@@ -844,7 +844,7 @@ class WindowBuildTests(StatusBarTestCase):
                 str(profile_popup.itemAtIndex_(index).title())
                 for index in range(profile_popup.numberOfItems())
             ],
-            ["Current", "Cyan", "Ember", "Purple"],
+            ["Current", "Cyan", "Ember", "Purple", "Rainbow"],
         )
         self.assertFalse(
             self.controller.settings_buttons[
@@ -962,6 +962,11 @@ class WindowBuildTests(StatusBarTestCase):
                     "Purple Attention",
                     "Purple Complete",
                     "Purple Lid Open",
+                    "Rainbow Idle",
+                    "Rainbow Spin",
+                    "Rainbow Attention",
+                    "Rainbow Complete",
+                    "Rainbow Lid Open",
                     "Night Rider",
                     "Lid Open Sweep",
                     "Lid Closed Sweep",

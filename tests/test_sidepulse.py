@@ -149,11 +149,17 @@ from sidepulse.settings import (
     AGENT_ANIMATION_PROFILE_CYAN,
     AGENT_ANIMATION_PROFILE_EMBER,
     AGENT_ANIMATION_PROFILE_PURPLE,
+    AGENT_ANIMATION_PROFILE_RAINBOW,
     AGENT_ANIMATION_PURPLE_ATTENTION,
     AGENT_ANIMATION_PURPLE_COMPLETE,
     AGENT_ANIMATION_PURPLE_IDLE,
     AGENT_ANIMATION_PURPLE_LID_OPEN,
     AGENT_ANIMATION_PURPLE_TIDE,
+    AGENT_ANIMATION_RAINBOW_ATTENTION,
+    AGENT_ANIMATION_RAINBOW_COMPLETE,
+    AGENT_ANIMATION_RAINBOW_IDLE,
+    AGENT_ANIMATION_RAINBOW_LID_OPEN,
+    AGENT_ANIMATION_RAINBOW_SPIN,
     AGENT_ANIMATION_SOLID_GREEN,
     AGENT_ANIMATION_WORKING_MODES,
     CLOSED_LID_AWAKE_AGENTS,
@@ -5890,6 +5896,11 @@ class AgentMonitorTests(unittest.TestCase):
             AGENT_ANIMATION_PURPLE_ATTENTION,
             AGENT_ANIMATION_PURPLE_COMPLETE,
             AGENT_ANIMATION_PURPLE_LID_OPEN,
+            AGENT_ANIMATION_RAINBOW_IDLE,
+            AGENT_ANIMATION_RAINBOW_SPIN,
+            AGENT_ANIMATION_RAINBOW_ATTENTION,
+            AGENT_ANIMATION_RAINBOW_COMPLETE,
+            AGENT_ANIMATION_RAINBOW_LID_OPEN,
             AGENT_ANIMATION_NIGHT_RIDER,
             AGENT_ANIMATION_LID_OPEN,
             AGENT_ANIMATION_LID_CLOSED,
@@ -5989,12 +6000,47 @@ class AgentMonitorTests(unittest.TestCase):
             AGENT_ANIMATION_LID_CLOSED,
         )
 
+    def test_rainbow_profile_runs_on_both_led_counts(self) -> None:
+        try:
+            from sidepulse.led_wasm import LedWasmUnavailableError, SdLedWasmController
+        except ImportError as exc:
+            self.skipTest(str(exc))
+        profile = builtin_agent_animation_profiles()[AGENT_ANIMATION_PROFILE_RAINBOW]
+        self.assertEqual(profile.name, "Rainbow")
+        self.assertEqual(set(profile.animations), set(ANIMATION_STATES))
+        for count in (8, 2):
+            try:
+                engine = SdLedWasmController(led_count=count)
+            except LedWasmUnavailableError as exc:
+                self.skipTest(str(exc))
+            for state, animation_id in profile.animations.items():
+                with self.subTest(state=state, led_count=count):
+                    program = builtin_animation_program(animation_id, count)
+                    self.assertTrue(engine.parse(program, 0).ok)
+                    self.assertLessEqual(len(program.encode()), 512)
+                    self.assertLessEqual(len(program.splitlines()), 20)
+
+        # Working spins a full rainbow; the colors move along the strip.
+        engine = SdLedWasmController(led_count=8)
+        engine.parse(builtin_animation_program("rainbow-spin", 8), 0)
+        start = engine.step(16)
+        self.assertEqual(len(set(start)), 8)
+        quarter = engine.step(16 + 400)  # a quarter turn: two LEDs along
+        for moved, original in zip(quarter[2:], start[:6]):
+            for got, want in zip(moved, original):
+                self.assertLessEqual(abs(got - want), 2)
+        program = program_for_agent_mode(
+            AgentMode.WORKING, animation_style="rainbow-spin", led_count=2
+        )
+        self.assertIn("repeat", program)
+
     def test_shipped_profile_json_matches_builtin_profiles(self) -> None:
         profiles = builtin_agent_animation_profiles()
         expected = {
             "cyan": AGENT_ANIMATION_PROFILE_CYAN,
             "ember": AGENT_ANIMATION_PROFILE_EMBER,
             "purple": AGENT_ANIMATION_PROFILE_PURPLE,
+            "rainbow": AGENT_ANIMATION_PROFILE_RAINBOW,
         }
         for file_stem, profile_id in expected.items():
             with self.subTest(profile=file_stem):
@@ -6047,6 +6093,7 @@ class AgentMonitorTests(unittest.TestCase):
                 AGENT_ANIMATION_PROFILE_CYAN,
                 AGENT_ANIMATION_PROFILE_EMBER,
                 AGENT_ANIMATION_PROFILE_PURPLE,
+                AGENT_ANIMATION_PROFILE_RAINBOW,
             },
         )
 

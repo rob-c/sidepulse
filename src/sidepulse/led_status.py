@@ -55,6 +55,10 @@ COUNT_SPECIFIC_ANIMATIONS = frozenset(
         "purple-idle",
         "purple-tide",
         "purple-lid-open",
+        "rainbow-idle",
+        "rainbow-spin",
+        "rainbow-complete",
+        "rainbow-lid-open",
         "lid-open",
         "lid-closed",
     }
@@ -168,6 +172,11 @@ def program_for_agent_mode(
         "purple-attention",
         "purple-complete",
         "purple-lid-open",
+        "rainbow-idle",
+        "rainbow-spin",
+        "rainbow-attention",
+        "rainbow-complete",
+        "rainbow-lid-open",
         "lid-open",
         "lid-closed",
     }:

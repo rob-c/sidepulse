@@ -1,0 +1,18 @@
+{
+  "animations": {
+    "blocked_error": "rainbow-attention",
+    "completed": "rainbow-complete",
+    "idle_ready": "rainbow-idle",
+    "lid_closed": "lid-closed",
+    "lid_open": "rainbow-lid-open",
+    "long_task_progress": "rainbow-spin",
+    "tool_running": "rainbow-spin",
+    "unknown": "rainbow-idle",
+    "waiting_for_input": "rainbow-attention",
+    "working": "rainbow-spin"
+  },
+  "custom_animations": {},
+  "format": "sidepulse-animation-profile",
+  "name": "Rainbow",
+  "version": 1
+}
