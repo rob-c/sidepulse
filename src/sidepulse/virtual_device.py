@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import colorsys
 import math
 import re
 import time
@@ -42,6 +43,9 @@ FRAME_RATE = 60.0
 FRAME_INTERVAL = 1.0 / FRAME_RATE
 IDLE_FRAME_RATE = 12.0
 IDLE_FRAME_INTERVAL = 1.0 / IDLE_FRAME_RATE
+# Rainbow theme: one full rainbow spans the LEDs and flows rightwards, taking this
+# long to carry each colour all the way round.
+RAINBOW_CYCLE_SECONDS = 3.0
 
 
 def monotonic_ms() -> int:
@@ -146,6 +150,33 @@ def virtual_led_colors(
             amount = math.sin(math.pi * local / 0.76) ** 2
         colors.append((0.0, 0.898 * scale * amount, scale * amount, amount))
     return colors
+
+
+def rainbow_hue(index: int, now: float, led_count: int = LED_COUNT) -> float:
+    """Hue in [0, 1) for one LED of a rainbow that flows towards higher indexes."""
+    count = max(1, int(led_count))
+    return ((index + 0.5) / count - now / RAINBOW_CYCLE_SECONDS) % 1.0
+
+
+def rainbow_led_colors(
+    colors: list[tuple[float, float, float, float]],
+    now: float,
+) -> list[tuple[float, float, float, float]]:
+    """Recolour LEDs as a flowing rainbow while keeping each LED's brightness.
+
+    An animation's motion (sweeps, scanners, pulses, fades) is carried by how bright
+    each LED is over time. Only the hue changes, so every animation keeps its shape.
+    """
+    count = len(colors)
+    recoloured = []
+    for index, (red, green, blue, alpha) in enumerate(colors):
+        level = min(1.0, max(red, green, blue))
+        if level <= 0.0:
+            recoloured.append((0.0, 0.0, 0.0, alpha))
+            continue
+        hue = rainbow_hue(index, now, count)
+        recoloured.append((*colorsys.hsv_to_rgb(hue, 1.0, level), alpha))
+    return recoloured
 
 
 def blended_led_color_at_x(
@@ -253,7 +284,12 @@ class VirtualLedView(NSView):
             self.wasm_error = None
             self.has_notch = True
             self.compact_preview = False
+            self.rainbow = False
         return self
+
+    def setRainbow_(self, rainbow):
+        self.rainbow = bool(rainbow)
+        self.setNeedsDisplay_(True)
 
     def setHasNotch_(self, has_notch):
         self.has_notch = bool(has_notch)
@@ -360,8 +396,16 @@ class VirtualLedView(NSView):
             self.state, time.monotonic() - self.started_at, self.brightness
         )
 
-    def drawRect_(self, _rect):
+    def _display_colors(self):
         colors = self._colors_for_draw()
+        # Battery levels keep their red/amber/green meaning.
+        if self.rainbow and self.fixed_colors is None:
+            # A shared clock keeps the notch and every preview flowing in step.
+            return rainbow_led_colors(colors, time.monotonic())
+        return colors
+
+    def drawRect_(self, _rect):
+        colors = self._display_colors()
         width = self.bounds().size.width
         height = self.bounds().size.height
 
@@ -505,7 +549,13 @@ class VirtualStatusDevice(NSObject):
             self.view = None
             self.timer = None
             self.frame_interval = None
+            self.rainbow = False
         return self
+
+    def set_rainbow(self, enabled: bool):
+        self.rainbow = bool(enabled)
+        if self.view is not None and self.view.rainbow != self.rainbow:
+            self.view.setRainbow_(self.rainbow)
 
     def show(self):
         if self.window is None:
@@ -580,6 +630,7 @@ class VirtualStatusDevice(NSObject):
             | NSWindowCollectionBehaviorFullScreenAuxiliary
         )
         self.view = VirtualLedView.alloc().initWithFrame_(((0, 0), (WINDOW_WIDTH, WINDOW_HEIGHT)))
+        self.view.setRainbow_(self.rainbow)
         self.window.setContentView_(self.view)
 
     @objc.IBAction

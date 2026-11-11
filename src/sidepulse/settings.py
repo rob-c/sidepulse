@@ -332,6 +332,8 @@ class AgentMonitorSettings:
     history_timeframe_seconds: float = DEFAULT_HISTORY_TIMEFRAME_SECONDS
     setup_screen_completed: bool = False
     show_menu_bar_icon: bool = True
+    # Draw the SidePulse Notch and animation previews as a flowing rainbow.
+    rainbow_theme_enabled: bool = False
 
     def transcript_enabled(self, provider: str) -> bool:
         if provider == "codex":
@@ -771,6 +773,9 @@ class AgentMonitorSettings:
     def with_menu_bar_icon(self, visible: bool) -> "AgentMonitorSettings":
         return replace(self, show_menu_bar_icon=bool(visible))
 
+    def with_rainbow_theme(self, enabled: bool) -> "AgentMonitorSettings":
+        return replace(self, rainbow_theme_enabled=bool(enabled))
+
     def with_virtual_status_device(self, enabled: bool) -> "AgentMonitorSettings":
         return replace(self, virtual_status_device_enabled=bool(enabled))
 
@@ -808,6 +813,7 @@ class AgentMonitorSettings:
             "devices": [device.to_dict() for device in self.devices],
             "sleep_prevention_policy": self.sleep_prevention_policy,
             "virtual_status_device_enabled": self.virtual_status_device_enabled,
+            "rainbow_theme": self.rainbow_theme_enabled,
             "closed_lid_system_override_enabled": self.closed_lid_system_override_enabled,
             "lid_closed_animation": self.lid_closed_animation.to_dict(),
             "lid_open_animation": self.lid_open_animation.to_dict(),
@@ -950,6 +956,7 @@ def load_settings(path: Path | None = None) -> AgentMonitorSettings:
     )
     return AgentMonitorSettings(
         show_menu_bar_icon=_bool_setting(data.get("show_menu_bar_icon"), True),
+        rainbow_theme_enabled=_bool_setting(data.get("rainbow_theme"), False),
         codex_transcripts_enabled=_bool_setting(transcript.get("codex"), False),
         claude_transcripts_enabled=_bool_setting(transcript.get("claude"), False),
         led_display=led_display,
