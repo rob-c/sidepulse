@@ -1,254 +1,238 @@
-"""Rainbow theme for the SidePulse Notch and the animation previews."""
+"""Rainbow theme: the Rainbow animations on every SidePulse device and the Notch."""
 
 from __future__ import annotations
 
-import colorsys
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from sidepulse.led_status import program_for_agent_mode
 from sidepulse.models import AgentMode
-from sidepulse.settings import AgentMonitorSettings, load_settings, save_settings
+from sidepulse.settings import (
+    AGENT_ANIMATION_PROFILE_PURPLE,
+    AGENT_ANIMATION_PROFILE_RAINBOW,
+    ANIMATION_STATES,
+    AgentMonitorSettings,
+    builtin_agent_animation_profiles,
+    load_settings,
+    save_settings,
+)
 
-try:
-    from sidepulse import virtual_device as vd
-except (ImportError, SystemExit) as exc:  # AppKit and PyObjC are macOS-only.
-    vd = None
-    VIRTUAL_DEVICE_SKIP = str(exc)
-
-
-def hue_of(color) -> float:
-    return colorsys.rgb_to_hsv(*color[:3])[0]
-
-
-def hue_distance(first: float, second: float) -> float:
-    gap = abs(first - second) % 1.0
-    return min(gap, 1.0 - gap)
+RAINBOW = builtin_agent_animation_profiles()[AGENT_ANIMATION_PROFILE_RAINBOW].animations
 
 
-WHITE = (1.0, 1.0, 1.0, 1.0)
+def purple_settings(**kwargs) -> AgentMonitorSettings:
+    return AgentMonitorSettings(**kwargs).with_applied_agent_animation_profile(
+        AGENT_ANIMATION_PROFILE_PURPLE
+    )
 
 
-class RainbowColorTests(unittest.TestCase):
-    def setUp(self):
-        if vd is None:
-            self.skipTest(VIRTUAL_DEVICE_SKIP)
-
-    def test_keeps_each_led_brightness_and_alpha(self):
-        # One frame of a sweep: dark LEDs, a rising edge, the peak, and a dim glow.
-        colors = [
-            (0.0, 0.0, 0.0, 0.0),
-            (0.0, 0.2, 0.25, 0.25),
-            (0.0, 0.898, 1.0, 1.0),
-            (0.6, 0.0, 0.6, 0.6),
-            (2 / 255, 2 / 255, 4 / 255, 4 / 255),
-            (0.95, 0.22, 0.1, 0.95),
-            (0.0, 0.0, 0.0, 0.0),
-            (1.0, 0.227, 0.0, 1.0),
-        ]
-        rainbow = vd.rainbow_led_colors(colors, 12.3)
-
-        self.assertEqual(len(rainbow), len(colors))
-        for before, after in zip(colors, rainbow):
-            self.assertAlmostEqual(max(after[:3]), max(before[:3]))
-            self.assertEqual(after[3], before[3])
-        self.assertEqual(rainbow[0], (0.0, 0.0, 0.0, 0.0))
-        self.assertEqual(rainbow[6], (0.0, 0.0, 0.0, 0.0))
-
-    def test_spreads_one_full_rainbow_across_the_leds(self):
-        hues = [hue_of(color) for color in vd.rainbow_led_colors([WHITE] * 8, 0.0)]
-
-        for index in range(7):
-            self.assertAlmostEqual(hue_distance(hues[index], hues[index + 1]), 1 / 8)
-        self.assertAlmostEqual(hue_distance(hues[0], hues[4]), 0.5)
-
-    def test_colors_flow_rightwards_over_time(self):
-        step = vd.RAINBOW_CYCLE_SECONDS / 8
-        before = vd.rainbow_led_colors([WHITE] * 8, 5.0)
-        after = vd.rainbow_led_colors([WHITE] * 8, 5.0 + step)
-
-        for index in range(1, 8):
-            self.assertAlmostEqual(
-                hue_distance(hue_of(after[index]), hue_of(before[index - 1])), 0.0
-            )
-        cycled = vd.rainbow_led_colors([WHITE] * 8, 5.0 + vd.RAINBOW_CYCLE_SECONDS)
-        for first, second in zip(before, cycled):
-            self.assertAlmostEqual(hue_distance(hue_of(first), hue_of(second)), 0.0)
+def working_program(style: str, led_count: int) -> str:
+    return program_for_agent_mode(
+        AgentMode.WORKING, led_count=led_count, animation_style=style
+    ).strip()
 
 
-class RainbowViewTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        if vd is None:
-            raise unittest.SkipTest(VIRTUAL_DEVICE_SKIP)
-        from AppKit import NSApplication
+class RainbowThemeSettingTests(unittest.TestCase):
+    def test_turning_it_on_uses_rainbow_for_every_state_and_off_restores(self):
+        settings = purple_settings()
+        self.assertFalse(settings.rainbow_theme_enabled)
 
-        NSApplication.sharedApplication()
+        rainbow = settings.with_rainbow_theme(True)
+        self.assertTrue(rainbow.rainbow_theme_enabled)
+        self.assertEqual(
+            {mode: rainbow.agent_animation_id(mode) for mode in ANIMATION_STATES}, RAINBOW
+        )
+        self.assertEqual(rainbow.matching_agent_animation_profile_id(), AGENT_ANIMATION_PROFILE_RAINBOW)
+        self.assertIs(rainbow.with_rainbow_theme(True), rainbow)
 
-    def make_view(self):
-        return vd.VirtualLedView.alloc().initWithFrame_(((0, 0), (220, 37)))
+        restored = rainbow.with_rainbow_theme(False)
+        self.assertFalse(restored.rainbow_theme_enabled)
+        self.assertEqual(restored.matching_agent_animation_profile_id(), AGENT_ANIMATION_PROFILE_PURPLE)
+        self.assertEqual(restored.rainbow_restore_animations, {})
 
-    def test_view_recolors_animations_only_when_enabled(self):
-        view = self.make_view()
-        view.setProgram_("#00E5FF")
-        if view.wasm_controller is None:
-            self.skipTest(f"LED engine unavailable: {view.wasm_error}")
+    def test_choosing_the_rainbow_profile_ticks_the_theme(self):
+        settings = AgentMonitorSettings().with_applied_agent_animation_profile(
+            AGENT_ANIMATION_PROFILE_RAINBOW
+        )
+        self.assertTrue(settings.rainbow_theme_enabled)
+        # Nothing was remembered, so turning it off falls back to the default profile.
+        self.assertEqual(settings.with_rainbow_theme(False).agent_animation_id("working"), "cyan-roll")
 
-        self.assertFalse(view.rainbow)
-        plain = view._display_colors()
-        self.assertEqual({color[:3] for color in plain}, {(0.0, 229 / 255, 1.0)})
-
-        view.setRainbow_(True)
-        rainbow = view._display_colors()
-        self.assertEqual(len({round(hue_of(color), 3) for color in rainbow}), 8)
-        for color in rainbow:
-            self.assertAlmostEqual(max(color[:3]), 1.0)
-
-    def test_battery_levels_keep_their_colors(self):
-        view = self.make_view()
-        view.setRainbow_(True)
-        view.setBatteryPercent_brightness_(15, 255)
-
-        self.assertEqual(view._display_colors(), view.fixed_colors)
-
-    def test_notch_applies_the_theme_to_a_window_built_later(self):
-        device = vd.VirtualStatusDevice.alloc().init()
-        device.set_rainbow(True)
-        device._build_window()
-        self.addCleanup(device.window.close)
-
-        self.assertTrue(device.view.rainbow)
-        device.set_rainbow(False)
-        self.assertFalse(device.view.rainbow)
-
-
-class RainbowSettingTests(unittest.TestCase):
-    def test_off_by_default_and_saved_with_settings(self):
-        self.assertFalse(AgentMonitorSettings().rainbow_theme_enabled)
+    def test_restore_point_is_saved(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
-            save_settings(AgentMonitorSettings().with_rainbow_theme(True), path)
-            self.assertIs(json.loads(path.read_text())["rainbow_theme"], True)
-            self.assertTrue(load_settings(path).rainbow_theme_enabled)
+            save_settings(purple_settings().with_rainbow_theme(True), path)
+            document = json.loads(path.read_text())
+            self.assertNotIn("rainbow_theme", document)
+            self.assertEqual(document["rainbow_restore"]["working"]["style"], "purple-tide")
 
-            save_settings(load_settings(path).with_rainbow_theme(False), path)
-            self.assertFalse(load_settings(path).rainbow_theme_enabled)
+            loaded = load_settings(path)
+            self.assertTrue(loaded.rainbow_theme_enabled)
+            self.assertEqual(
+                loaded.with_rainbow_theme(False).matching_agent_animation_profile_id(),
+                AGENT_ANIMATION_PROFILE_PURPLE,
+            )
+
+    def test_earlier_notch_only_setting_turns_into_the_full_theme(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            save_settings(purple_settings(), path)
+            document = json.loads(path.read_text())
+            document["rainbow_theme"] = True
+            path.write_text(json.dumps(document))
+
+            loaded = load_settings(path)
+            self.assertTrue(loaded.rainbow_theme_enabled)
+            save_settings(loaded.with_rainbow_theme(False), path)
+            reloaded = load_settings(path)
+            self.assertFalse(reloaded.rainbow_theme_enabled)
+            self.assertEqual(
+                reloaded.matching_agent_animation_profile_id(), AGENT_ANIMATION_PROFILE_PURPLE
+            )
+
+
+class RainbowServiceTests(unittest.TestCase):
+    def test_headless_service_writes_rainbow_to_devices(self):
+        from sidepulse import service
+
+        written = {}
+        pro = SimpleNamespace(root=Path("/Volumes/SidePulse"), target=Path("/Volumes/SidePulse/LEDS.LED"))
+        dot = SimpleNamespace(root=Path("/Volumes/PulseDot"), target=Path("/Volumes/PulseDot/LEDS.LED"))
+        with (
+            patch.object(service, "status_bar_monitor_available", return_value=False),
+            patch.object(service, "load_settings", return_value=purple_settings().with_rainbow_theme(True)),
+            patch.object(service, "load_alerts", return_value=[]),
+            patch.object(service, "read_battery_snapshot", side_effect=OSError),
+            patch.object(service, "discover_devices", return_value=[pro, dot]),
+            patch.object(
+                service,
+                "write_led_program",
+                side_effect=lambda program, device_path: written.__setitem__(device_path, program),
+            ),
+            patch.object(service, "load_ios_links", return_value=[]),
+            patch.object(service, "HookEventServer"),
+        ):
+            instance = service.SidePulseService()
+            instance.monitor = Mock()
+            instance.monitor.snapshot.return_value = SimpleNamespace(
+                aggregate=SimpleNamespace(mode=AgentMode.WORKING)
+            )
+            instance.sync_outputs()
+        self.assertEqual(written[pro.target].strip(), working_program("rainbow-spin", 8))
+        self.assertEqual(written[dot.target].strip(), working_program("rainbow-spin", 2))
+
+
+try:
+    from sidepulse import status_bar as sb
+except (ImportError, SystemExit) as exc:  # AppKit and PyObjC are macOS-only.
+    sb = None
+    STATUS_BAR_SKIP = str(exc)
 
 
 class RainbowStatusBarTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        try:
-            from sidepulse import status_bar
-        except (ImportError, SystemExit) as exc:
-            raise unittest.SkipTest(str(exc))
+        if sb is None:
+            raise unittest.SkipTest(STATUS_BAR_SKIP)
         from AppKit import NSApplication
 
         NSApplication.sharedApplication()
-        cls.sb = status_bar
 
-    def device(self, device_id: str, name: str):
-        return self.sb.StatusBarDevice(
-            device_id=device_id,
-            name=name,
-            root=Path(device_id),
-            target=Path(device_id),
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+
+    def device(self, folder: str, device_id: str | None = None):
+        root = self.root / folder
+        root.mkdir(exist_ok=True)
+        return sb.StatusBarDevice(
+            device_id=device_id or str(root),
+            name=folder,
+            root=root,
+            target=root / "LEDS.LED",
             connected=True,
             display="agent",
             brightness=255,
         )
 
-    def notch(self):
-        return self.device(self.sb.VIRTUAL_DEVICE_ID, self.sb.VIRTUAL_DEVICE_NAME)
-
-    def test_notch_menu_toggle_shows_the_current_setting(self):
-        for enabled in (False, True):
-            with self.subTest(enabled=enabled):
-                target = SimpleNamespace(
-                    settings=AgentMonitorSettings(
-                        virtual_status_device_enabled=True,
-                        rainbow_theme_enabled=enabled,
-                    )
-                )
-                submenu = self.sb.build_device_menu_item(self.notch(), target).submenu()
-                item = submenu.itemWithTitle_("Rainbow Theme")
-
-                self.assertIsNotNone(item)
-                self.assertEqual(item.action(), "toggleRainbowTheme:")
-                self.assertIs(item.target(), target)
-                self.assertEqual(item.state(), 1 if enabled else 0)
-
-        hardware = self.device("/Volumes/SidePulsePro", "SidePulse Pro")
-        target = SimpleNamespace(settings=AgentMonitorSettings())
-        submenu = self.sb.build_device_menu_item(hardware, target).submenu()
-        self.assertIsNone(submenu.itemWithTitle_("Rainbow Theme"))
-
-    def test_checkbox_and_menu_toggle_save_and_recolor_previews(self):
-        sb = self.sb
+    def test_theme_reaches_sidepulse_dot_and_notch_then_restores(self):
+        pro = self.device("SidePulse")
+        dot = self.device("PulseDot")
+        notch = self.device("notch", device_id=sb.VIRTUAL_DEVICE_ID)
         controller = sb.StatusBarController.alloc().init()
-        controller.settings = AgentMonitorSettings()
+        controller.settings = purple_settings(virtual_status_device_enabled=True)
+        controller.leds_enabled = True
+        controller.virtual_status_device = Mock()
         controller.settings_window = sb.build_settings_window(controller)
         self.addCleanup(controller.settings_window.close)
         checkbox = controller.settings_buttons["rainbow_theme"]
-        editor = sb.build_agent_animation_editor_window(controller)
-        self.addCleanup(editor.close)
 
-        def previews():
-            for mode in sb.ANIMATION_UI_STATES:
-                yield controller.settings_fields[f"agent_animation_preview_{mode}"]
-                popup = controller.settings_fields[f"agent_animation_{mode}"]
-                for index in range(popup.numberOfItems()):
-                    view = popup.itemAtIndex_(index).view()
-                    if view is not None:
-                        yield view.animation_preview
+        def sync():
+            controller.sync_leds_now(AgentMode.WORKING, None, sb.LED_DISPLAY_AGENT)
+            controller.sync_virtual_status_device(AgentMode.WORKING, None)
 
         with (
+            patch.object(sb.StatusBarController, "status_bar_devices", return_value=[pro, dot, notch]),
             patch.object(sb, "save_settings") as save,
-            patch.object(sb.StatusBarController, "refresh_") as refresh,
+            patch.object(sb.StatusBarController, "refresh_"),
         ):
+            sync()
+            self.assertEqual(pro.target.read_text().strip(), working_program("purple-tide", 8))
+
             checkbox.setState_(sb.NSOnState)
             controller.setRainbowThemeFromCheckbox_(checkbox)
             self.assertTrue(save.call_args.args[0].rainbow_theme_enabled)
-            self.assertTrue(controller.settings.rainbow_theme_enabled)
-            refresh.assert_called()
-            self.assertTrue(all(preview.rainbow for preview in previews()))
-            # The custom-animation editor shows true colors.
-            self.assertFalse(controller.agent_animation_editor_preview.rainbow)
+            self.assertEqual(controller.selected_agent_animation_profile_id, AGENT_ANIMATION_PROFILE_RAINBOW)
+            profile_popup = controller.settings_fields["agent_animation_profile"]
+            self.assertEqual(str(profile_popup.titleOfSelectedItem()), "Rainbow")
+            sync()
+            self.assertEqual(pro.target.read_text().strip(), working_program("rainbow-spin", 8))
+            self.assertEqual(dot.target.read_text().strip(), working_program("rainbow-spin", 2))
+            notch_program = controller.virtual_status_device.set_program.call_args.args[0]
+            self.assertEqual(notch_program.strip(), working_program("rainbow-spin", 8))
+            # The previews show the same program the devices get.
+            preview = controller.settings_fields[f"agent_animation_preview_{AgentMode.WORKING.value}"]
+            self.assertIn("roll-right", preview.current_program)
 
             controller.toggleRainbowTheme_(None)
-            self.assertFalse(save.call_args.args[0].rainbow_theme_enabled)
             self.assertEqual(checkbox.state(), sb.NSOffState)
-            self.assertFalse(any(preview.rainbow for preview in previews()))
+            sync()
+            self.assertEqual(pro.target.read_text().strip(), working_program("purple-tide", 8))
+            self.assertEqual(
+                controller.virtual_status_device.set_program.call_args.args[0].strip(),
+                working_program("purple-tide", 8),
+            )
 
-    def test_notch_is_rainbow_for_agent_animations_but_not_battery(self):
-        sb = self.sb
-        controller = sb.StatusBarController.alloc().init()
-        controller.settings = AgentMonitorSettings(
-            virtual_status_device_enabled=True,
-            rainbow_theme_enabled=True,
+    def test_menu_toggle_lives_in_the_main_menu(self):
+        notch = sb.StatusBarDevice(
+            device_id=sb.VIRTUAL_DEVICE_ID,
+            name=sb.VIRTUAL_DEVICE_NAME,
+            root=Path(sb.VIRTUAL_DEVICE_ID),
+            target=Path(sb.VIRTUAL_DEVICE_ID),
+            connected=True,
+            display="agent",
+            brightness=255,
         )
-        controller.virtual_status_device = Mock()
-        notch = controller.virtual_status_device
-
-        with (
-            patch.object(sb.StatusBarController, "status_bar_devices", return_value=[self.notch()]),
-            patch.object(
-                sb.StatusBarController,
-                "active_led_display_kind_for_device",
-                side_effect=[sb.LED_DISPLAY_AGENT, sb.LED_DISPLAY_BATTERY],
-            ),
-            patch.object(sb, "program_for_battery", return_value="off"),
-        ):
-            controller.sync_virtual_status_device(AgentMode.WORKING, None)
-            notch.set_rainbow.assert_called_with(True)
-            notch.set_program.assert_called()
-
-            controller.sync_virtual_status_device(AgentMode.WORKING, object())
-            notch.set_rainbow.assert_called_with(False)
-            notch.set_program.assert_called_with("off")
+        snapshot = SimpleNamespace(statuses=[], collected_at=datetime.now(timezone.utc))
+        for settings in (purple_settings(), purple_settings().with_rainbow_theme(True)):
+            target = SimpleNamespace(
+                settings=settings,
+                closed_lid_awake=SimpleNamespace(last_error=None),
+                status_bar_devices=lambda: [notch],
+            )
+            menu = sb.build_menu(snapshot, sb.STATE_IDLE, target)
+            item = menu.itemWithTitle_("Rainbow Theme")
+            self.assertIsNotNone(item)
+            self.assertEqual(item.action(), "toggleRainbowTheme:")
+            self.assertEqual(item.state(), 1 if settings.rainbow_theme_enabled else 0)
+            notch_submenu = menu.itemWithTitle_(sb.VIRTUAL_DEVICE_NAME).submenu()
+            self.assertIsNone(notch_submenu.itemWithTitle_("Rainbow Theme"))
 
 
 if __name__ == "__main__":

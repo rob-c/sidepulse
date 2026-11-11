@@ -1872,7 +1872,6 @@ class StatusBarController(NSObject):
             self.settings_buttons.get("music_spectrum"),
             self.settings.music_spectrum_enabled,
         )
-        self.apply_rainbow_theme_to_previews()
         for provider in ("codex", "claude", "grok"):
             popup = self.settings_fields.get(f"{provider}_session_opener")
             if popup is not None:
@@ -2286,20 +2285,19 @@ class StatusBarController(NSObject):
             self.settings = load_settings()
             self.refresh_settings_window()
             return
+        self.selected_agent_animation_profile_id = (
+            self.settings.matching_agent_animation_profile_id()
+            or AGENT_ANIMATION_PROFILE_CUSTOM
+        )
+        self.reset_led_controllers_for_display_change()
         self.set_settings_message(
-            "Rainbow theme on." if self.settings.rainbow_theme_enabled else "Rainbow theme off."
+            "Rainbow theme on: Rainbow animations on every device."
+            if self.settings.rainbow_theme_enabled
+            else "Rainbow theme off: previous animations restored."
         )
         self.refresh_settings_window()
-        # Re-syncs the notch and rebuilds the menu so its checkmark follows.
+        # Rewrites every display and rebuilds the menu so its checkmark follows.
         self.refresh_(None)
-
-    def apply_rainbow_theme_to_previews(self) -> None:
-        # Menu previews pick the theme up when refresh_agent_animation_popup builds
-        # them. The custom-animation editor keeps true colors for authoring.
-        for mode_value in ANIMATION_UI_STATES:
-            preview = self.settings_fields.get(f"agent_animation_preview_{mode_value}")
-            if preview is not None:
-                preview.setRainbow_(self.settings.rainbow_theme_enabled)
 
     def set_sleep_prevention_policy(self, policy: str | None) -> None:
         if policy not in SLEEP_PREVENTION_CHOICES:
@@ -3371,11 +3369,9 @@ class StatusBarController(NSObject):
             self.virtual_status_device.hide()
             return
         if display == LED_DISPLAY_ALERT:
-            self.virtual_status_device.set_rainbow(False)
             self.virtual_status_device.set_program(alert_program(device.brightness))
             return
         if display == LED_DISPLAY_BATTERY and battery_snapshot is not None:
-            self.virtual_status_device.set_rainbow(False)
             self.virtual_status_device.set_program(
                 program_for_battery(
                     battery_snapshot,
@@ -3396,7 +3392,6 @@ class StatusBarController(NSObject):
             except DeviceWriteError as exc:
                 log_status_bar(f"virtual animation error {MODE_LABELS[mode]}: {exc}")
                 return
-            self.virtual_status_device.set_rainbow(self.settings.rainbow_theme_enabled)
             self.virtual_status_device.set_program(program)
 
     def sync_leds_worker(
@@ -4017,6 +4012,15 @@ def build_menu(snapshot, state: StatusBarState, target: StatusBarController) -> 
         )
         virtual_toggle.setTarget_(target)
         menu.addItem_(virtual_toggle)
+    rainbow_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Rainbow Theme",
+        "toggleRainbowTheme:",
+        "",
+    )
+    rainbow_item.setTarget_(target)
+    rainbow_item.setState_(1 if getattr(target.settings, "rainbow_theme_enabled", False) else 0)
+    rainbow_item.setToolTip_("Rainbow animations on every SidePulse device and the Notch")
+    menu.addItem_(rainbow_item)
     spectrum_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
         "Music Spectrum",
         "toggleMusicSpectrum:",
@@ -4134,16 +4138,6 @@ def build_device_menu_item(device: StatusBarDevice, target: StatusBarController)
 
     if device.device_id == VIRTUAL_DEVICE_ID:
         submenu.addItem_(NSMenuItem.separatorItem())
-        rainbow_theme = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Rainbow Theme",
-            "toggleRainbowTheme:",
-            "",
-        )
-        rainbow_theme.setTarget_(target)
-        rainbow_theme.setState_(
-            1 if getattr(target.settings, "rainbow_theme_enabled", False) else 0
-        )
-        submenu.addItem_(rainbow_theme)
         remove_sidepulse_notch = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Remove SidePulse Notch",
             "toggleVirtualStatusDevice:",
@@ -5179,8 +5173,8 @@ def build_settings_window(target: StatusBarController) -> NSWindow:
         "setRainbowThemeFromCheckbox:",
     )
     rainbow_theme.setToolTip_(
-        "Show the SidePulse Notch and these previews in a flowing rainbow, "
-        "keeping each animation's movement. SidePulse devices keep their colors."
+        "Use the Rainbow animations for every state on all SidePulse devices, the "
+        "SidePulse Notch, and these previews. Untick to restore your previous animations."
     )
     music_spectrum = add_checkbox(
         agent_animations_tab,
@@ -5728,7 +5722,6 @@ def refresh_agent_animation_popup(
             label,
             agent_animation_catalog_program(settings, state, animation_id),
         )
-        menu_view.animation_preview.setRainbow_(settings.rainbow_theme_enabled)
         item.setView_(menu_view)
     popup.menu().addItem_(NSMenuItem.separatorItem())
     popup.addItemWithTitle_("Add Custom…")

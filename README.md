@@ -458,7 +458,9 @@ The built-in profiles are **Cyan** (the default), **Ember**, **Purple**, and **R
 In **Rainbow**, a full rainbow spins left to right while an agent works (on SidePulse
 Dot the two LEDs cycle through opposite colors), the middle LEDs breathe in shifting
 colors when idle, the whole rainbow pulses when an agent needs you, and it holds a
-steady rainbow when done.
+steady rainbow when done. **Rainbow theme** (on the Animations tab, or **Rainbow
+Theme** in the SidePulse menu) switches every state to the Rainbow animations in one
+click; untick it to go back to the animations you had before.
 Built-ins live in `src/sidepulse/resources/animations/` as `.LED` files; patterns
 that depend on the hardware layout have only `-2.LED` and `-8.LED` variants.
 Custom programs are stored in the `animations/` folder beside `settings.json`.

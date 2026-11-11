@@ -412,7 +412,7 @@ class AlertStatusBarTests(AlertStoreTestCase):
             controller.sync_leds_now(AgentMode.IDLE_READY, None, sb.LED_DISPLAY_AGENT)
         self.assertEqual(send.call_args.args[1], ALERT_PROGRAM)
 
-    def test_notch_pulses_red_without_rainbow(self):
+    def test_notch_pulses_red_even_with_the_rainbow_theme(self):
         controller = self.controller()
         controller.settings = controller.settings.with_rainbow_theme(True)
         controller.virtual_status_device = Mock()
@@ -420,7 +420,6 @@ class AlertStatusBarTests(AlertStoreTestCase):
         controller.active_alerts = [self.raise_("Disk almost full")]
         with patch.object(sb.StatusBarController, "status_bar_devices", return_value=[notch]):
             controller.sync_virtual_status_device(AgentMode.WORKING, None)
-        controller.virtual_status_device.set_rainbow.assert_called_with(False)
         controller.virtual_status_device.set_program.assert_called_with(ALERT_PROGRAM)
 
     def test_alerts_override_lid_hold_and_running_animations(self):

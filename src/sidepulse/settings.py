@@ -357,8 +357,8 @@ class AgentMonitorSettings:
     history_timeframe_seconds: float = DEFAULT_HISTORY_TIMEFRAME_SECONDS
     setup_screen_completed: bool = False
     show_menu_bar_icon: bool = True
-    # Draw the SidePulse Notch and animation previews as a flowing rainbow.
-    rainbow_theme_enabled: bool = False
+    # Animation selections to restore when the rainbow theme is turned off.
+    rainbow_restore_animations: dict[str, AgentAnimationSetting] = field(default_factory=dict)
     # Show the Mac's sound output on the LEDs while music plays.
     music_spectrum_enabled: bool = False
 
@@ -800,8 +800,38 @@ class AgentMonitorSettings:
     def with_menu_bar_icon(self, visible: bool) -> "AgentMonitorSettings":
         return replace(self, show_menu_bar_icon=bool(visible))
 
+    @property
+    def rainbow_theme_enabled(self) -> bool:
+        """True while every state uses the Rainbow profile's animation."""
+        rainbow = self.agent_animation_profiles.get(AGENT_ANIMATION_PROFILE_RAINBOW)
+        if rainbow is None:
+            return False
+        return all(
+            self.agent_animation_id(mode) == rainbow.animations.get(mode)
+            for mode in ANIMATION_STATES
+        )
+
     def with_rainbow_theme(self, enabled: bool) -> "AgentMonitorSettings":
-        return replace(self, rainbow_theme_enabled=bool(enabled))
+        """Switch every display to the Rainbow profile, or back to the earlier choices."""
+        if enabled:
+            if self.rainbow_theme_enabled:
+                return self
+            previous = {
+                mode: self.agent_animations.get(mode, AgentAnimationSetting())
+                for mode in ANIMATION_STATES
+            }
+            rainbow = self.with_applied_agent_animation_profile(AGENT_ANIMATION_PROFILE_RAINBOW)
+            return replace(rainbow, rainbow_restore_animations=previous)
+        if not self.rainbow_theme_enabled:
+            return replace(self, rainbow_restore_animations={})
+        if self.rainbow_restore_animations:
+            return replace(
+                self,
+                agent_animations=dict(self.rainbow_restore_animations),
+                rainbow_restore_animations={},
+            )
+        restored = self.with_applied_agent_animation_profile(AGENT_ANIMATION_PROFILE_CYAN)
+        return replace(restored, rainbow_restore_animations={})
 
     def with_music_spectrum(self, enabled: bool) -> "AgentMonitorSettings":
         return replace(self, music_spectrum_enabled=bool(enabled))
@@ -843,7 +873,10 @@ class AgentMonitorSettings:
             "devices": [device.to_dict() for device in self.devices],
             "sleep_prevention_policy": self.sleep_prevention_policy,
             "virtual_status_device_enabled": self.virtual_status_device_enabled,
-            "rainbow_theme": self.rainbow_theme_enabled,
+            "rainbow_restore": {
+                mode: setting.to_dict()
+                for mode, setting in sorted(self.rainbow_restore_animations.items())
+            },
             "music_spectrum": self.music_spectrum_enabled,
             "closed_lid_system_override_enabled": self.closed_lid_system_override_enabled,
             "lid_closed_animation": self.lid_closed_animation.to_dict(),
@@ -985,9 +1018,12 @@ def load_settings(path: Path | None = None) -> AgentMonitorSettings:
             )
         }
     )
-    return AgentMonitorSettings(
+    settings = AgentMonitorSettings(
         show_menu_bar_icon=_bool_setting(data.get("show_menu_bar_icon"), True),
-        rainbow_theme_enabled=_bool_setting(data.get("rainbow_theme"), False),
+        rainbow_restore_animations=_agent_animation_settings(
+            data.get("rainbow_restore"),
+            custom_agent_animations,
+        )[0],
         music_spectrum_enabled=_bool_setting(data.get("music_spectrum"), False),
         codex_transcripts_enabled=_bool_setting(transcript.get("codex"), False),
         claude_transcripts_enabled=_bool_setting(transcript.get("claude"), False),
@@ -1055,6 +1091,11 @@ def load_settings(path: Path | None = None) -> AgentMonitorSettings:
         ),
         setup_screen_completed=_bool_setting(data.get("setup_screen_completed"), False),
     )
+    # Earlier builds saved "rainbow_theme": true for a recolour of the notch only.
+    # Saving no longer writes that key, so this applies the full theme once.
+    if _bool_setting(data.get("rainbow_theme"), False):
+        settings = settings.with_rainbow_theme(True)
+    return settings
 
 
 def save_settings(
