@@ -76,6 +76,15 @@ try:
 except ImportError:  # pragma: no cover - only the Ghostty integration needs this.
     SBApplication = None
 
+from .alerts import (
+    ALERT_PROGRAM,
+    Alert,
+    alert_program,
+    alert_time_label,
+    dismiss_alert,
+    dismiss_all_alerts,
+    load_alerts,
+)
 from .battery import (
     BatteryLedController,
     BatterySnapshot,
@@ -183,6 +192,7 @@ from .settings import (
     ANIMATION_STATES,
     AGENT_ANIMATION_ADD_CUSTOM,
     AGENT_ANIMATION_AMBER_PULSE,
+    AGENT_ANIMATION_CUSTOM,
     AGENT_ANIMATION_CYAN_COMPLETE,
     AGENT_ANIMATION_CYAN_ROLL,
     AGENT_ANIMATION_EMBER_ATTENTION,
@@ -258,6 +268,10 @@ class StatusBarState:
 
 
 LINKED_PHONE_DEVICE_PREFIX = "ios/"
+# Not a user choice: what a device shows while an alert overrides its display.
+LED_DISPLAY_ALERT = "alert"
+ALERT_SYMBOL = "exclamationmark.triangle.fill"
+MAX_MENU_ALERTS = 10
 
 
 @dataclass(frozen=True)
@@ -656,6 +670,8 @@ class StatusBarController(NSObject):
         self.closed_lid_display_sleep_requested = False
         self.led_animation_until_monotonic = 0.0
         self.led_animation_token = 0
+        self.led_sync_retry_pending = False
+        self.active_alerts: list[Alert] = []
         self.virtual_status_device = VirtualStatusDevice.alloc().init()
         return self
 
@@ -717,6 +733,7 @@ class StatusBarController(NSObject):
 
     @objc.IBAction
     def refresh_(self, _sender):
+        self.update_active_alerts(load_alerts())
         try:
             snapshot = self.monitor.snapshot(include_stale=False)
         except Exception as exc:
@@ -914,6 +931,43 @@ class StatusBarController(NSObject):
             self.status_item.setVisible_(settings.show_menu_bar_icon)
         self.update_status_icon_animation()
         self.refresh_settings_window()
+
+    @objc.IBAction
+    def dismissAlert_(self, sender):
+        alert_id = sender.representedObject()
+        try:
+            dismiss_alert(str(alert_id), notify=False)
+        except Exception as exc:
+            log_status_bar(f"alert dismiss error: {exc}")
+        self.refresh_(None)
+
+    @objc.IBAction
+    def dismissAllAlerts_(self, _sender):
+        try:
+            dismiss_all_alerts(notify=False)
+        except Exception as exc:
+            log_status_bar(f"alert dismiss error: {exc}")
+        self.refresh_(None)
+
+    def update_active_alerts(self, alerts: list[Alert]) -> None:
+        was_alerting = bool(self.active_alerts)
+        self.active_alerts = list(alerts)
+        alerting = bool(self.active_alerts)
+        if alerting == was_alerting:
+            return
+        # Cancel lid and preview animations, and rewrite every display on the next
+        # sync, even if a sync is already running.
+        self.led_animation_token += 1
+        self.led_animation_until_monotonic = 0.0
+        self.reset_led_controllers_for_display_change()
+        self.led_sync_retry_pending = True
+        if alerting:
+            log_status_bar(f"alert=active count={len(self.active_alerts)}")
+            return
+        log_status_bar("alert=cleared")
+        if self.lid_closed_led_hold_active and self.should_hold_lid_closed_led_state():
+            # The alert replaced the dark lid-closed LEDs; fade back to them.
+            self.play_lid_animation(LID_ANIMATION_CLOSED)
 
     @objc.IBAction
     def setRainbowThemeFromCheckbox_(self, sender):
@@ -1180,9 +1234,15 @@ class StatusBarController(NSObject):
         if button is None:
             return
         button.setTitle_("")
-        button.setImage_(image_for_symbol(state.symbol, state.label))
-        button.setToolTip_(f"SidePulse Agent Monitor: {state.label}")
-        button.setAccessibilityLabel_(f"SidePulse Agent Monitor: {state.label}")
+        if self.active_alerts:
+            button.setImage_(alert_status_icon())
+            summary = alert_summary(self.active_alerts)
+            button.setToolTip_(f"SidePulse ALERT: {summary}")
+            button.setAccessibilityLabel_(f"SidePulse ALERT: {summary}")
+        else:
+            button.setImage_(image_for_symbol(state.symbol, state.label))
+            button.setToolTip_(f"SidePulse Agent Monitor: {state.label}")
+            button.setAccessibilityLabel_(f"SidePulse Agent Monitor: {state.label}")
         self.update_status_icon_animation()
         if previous != state:
             log_status_bar(f"state={state.label}")
@@ -1214,8 +1274,9 @@ class StatusBarController(NSObject):
                 if isinstance(status, AgentStatus):
                     rows.append((item, status))
         motion = not NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+        alerting = bool(self.active_alerts)
         animated = motion and (
-            (visible and self.current_state in (STATE_WORKING, STATE_ASK))
+            (visible and (alerting or self.current_state in (STATE_WORKING, STATE_ASK)))
             or any(state_for_mode(status.mode) in (STATE_WORKING, STATE_ASK) for _, status in rows)
         )
         if animated and self.status_icon_timer is None:
@@ -1232,11 +1293,12 @@ class StatusBarController(NSObject):
         frame = int(time.monotonic() / STATUS_ICON_FRAME_SECONDS) % STATUS_ICON_FRAME_COUNT
         if visible:
             state = self.current_state
-            icon = (
-                animated_status_icon(state, frame)
-                if animated and state in (STATE_WORKING, STATE_ASK)
-                else image_for_symbol(state.symbol, state.label)
-            )
+            if alerting:
+                icon = alert_status_icon(frame if animated else None)
+            elif animated and state in (STATE_WORKING, STATE_ASK):
+                icon = animated_status_icon(state, frame)
+            else:
+                icon = image_for_symbol(state.symbol, state.label)
             self.status_item.button().setImage_(icon)
         if rows:
             dark_mode = is_dark_appearance(self.tracking_status_menu.effectiveAppearance())
@@ -1262,6 +1324,7 @@ class StatusBarController(NSObject):
         self.event_server = HookEventServer(
             self.handle_hook_event_message,
             on_open_settings=self.schedule_open_settings,
+            on_alerts_changed=self.schedule_event_refresh,
         )
         try:
             socket_path = self.event_server.start()
@@ -2427,6 +2490,9 @@ class StatusBarController(NSObject):
         if not self.leds_enabled:
             self.set_settings_message("Connect LEDs before showing an animation.")
             return
+        if self.active_alerts:
+            self.set_settings_message("Dismiss the active alert before showing an animation.")
+            return
         try:
             state = str(mode_value)
             if state not in ANIMATION_STATES:
@@ -2584,6 +2650,8 @@ class StatusBarController(NSObject):
         try:
             if not self.leds_enabled:
                 raise ValueError("Connect LEDs before showing this animation.")
+            if self.active_alerts:
+                raise ValueError("Dismiss the active alert before showing this animation.")
             program = normalize_led_text(
                 text_control_value(self.agent_animation_editor_program)
             )
@@ -3048,6 +3116,9 @@ class StatusBarController(NSObject):
     ) -> str:
         if device.display == LED_DISPLAY_CUSTOM:
             return LED_DISPLAY_CUSTOM
+        # Devices the user drives themselves (Custom) are the only ones an alert skips.
+        if self.active_alerts:
+            return LED_DISPLAY_ALERT
         if device.display == LED_DISPLAY_BATTERY:
             return LED_DISPLAY_BATTERY
         if battery_snapshot is not None and time.monotonic() < self.battery_preview_until:
@@ -3065,18 +3136,20 @@ class StatusBarController(NSObject):
 
         self.sync_virtual_status_device(mode, battery_snapshot)
 
-        if self.lid_closed_led_hold_active:
+        alerting = bool(self.active_alerts)
+        if self.lid_closed_led_hold_active and not alerting:
             if self.should_hold_lid_closed_led_state():
                 return
             self.lid_closed_led_hold_active = False
             log_status_bar("lid_led_state=restoring reason=sleep_conditions_changed")
 
-        if time.monotonic() < self.led_animation_until_monotonic:
+        if not alerting and time.monotonic() < self.led_animation_until_monotonic:
             return
 
         if self.led_sync_in_flight:
             return
         self.led_sync_in_flight = True
+        self.led_sync_retry_pending = False
         thread = threading.Thread(
             target=self.sync_leds_worker,
             args=(mode, battery_snapshot, display_kind),
@@ -3106,6 +3179,10 @@ class StatusBarController(NSObject):
         display = self.active_led_display_kind_for_device(device, battery_snapshot)
         if display == LED_DISPLAY_CUSTOM:
             self.virtual_status_device.hide()
+            return
+        if display == LED_DISPLAY_ALERT:
+            self.virtual_status_device.set_rainbow(False)
+            self.virtual_status_device.set_program(alert_program(device.brightness))
             return
         if display == LED_DISPLAY_BATTERY and battery_snapshot is not None:
             self.virtual_status_device.set_rainbow(False)
@@ -3142,6 +3219,10 @@ class StatusBarController(NSObject):
             self.sync_leds_now(mode, battery_snapshot, display_kind)
         finally:
             self.led_sync_in_flight = False
+            if self.led_sync_retry_pending:
+                # Alerts changed mid-sync: sync again so they take effect now.
+                self.led_sync_retry_pending = False
+                self.schedule_event_refresh()
 
     def sync_leds_now(
         self,
@@ -3179,7 +3260,10 @@ class StatusBarController(NSObject):
                 continue
 
             if device.remote_link is not None:
-                if device_display_kind == LED_DISPLAY_BATTERY and battery_snapshot is not None:
+                if device_display_kind == LED_DISPLAY_ALERT:
+                    program = alert_program()
+                    label = f"{device.name} ALERT"
+                elif device_display_kind == LED_DISPLAY_BATTERY and battery_snapshot is not None:
                     program = program_for_battery(
                         battery_snapshot,
                         led_count=8,
@@ -3225,7 +3309,14 @@ class StatusBarController(NSObject):
                 )
                 continue
 
-            if device_display_kind == LED_DISPLAY_BATTERY and battery_snapshot is not None:
+            if device_display_kind == LED_DISPLAY_ALERT:
+                result = self.agent_controller_for_device(device).sync_mode(
+                    AgentMode.BLOCKED_ERROR,
+                    animation_style=AGENT_ANIMATION_CUSTOM,
+                    custom_program=ALERT_PROGRAM,
+                )
+                label = f"{device.name} ALERT"
+            elif device_display_kind == LED_DISPLAY_BATTERY and battery_snapshot is not None:
                 result = self.battery_controller_for_device(device).sync_snapshot(battery_snapshot)
                 label = (
                     f"{device.name} Battery {battery_snapshot.percent}% "
@@ -3261,7 +3352,7 @@ class StatusBarController(NSObject):
         *,
         animation: LedAnimationSetting | None = None,
     ) -> None:
-        if not self.leds_enabled:
+        if not self.leds_enabled or self.active_alerts:
             return
         if animation is None:
             state = (
@@ -3685,6 +3776,22 @@ def build_menu(snapshot, state: StatusBarState, target: StatusBarController) -> 
 
     menu.addItem_(disabled_menu_item("SidePulse"))
     menu.addItem_(NSMenuItem.separatorItem())
+
+    alerts = list(getattr(target, "active_alerts", None) or ())
+    if alerts:
+        for alert in alerts[:MAX_MENU_ALERTS]:
+            menu.addItem_(build_alert_menu_item(alert, target))
+        if len(alerts) > MAX_MENU_ALERTS:
+            menu.addItem_(disabled_menu_item(f"{len(alerts) - MAX_MENU_ALERTS} more alerts"))
+        if len(alerts) > 1:
+            dismiss_all = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Dismiss All Alerts",
+                "dismissAllAlerts:",
+                "",
+            )
+            dismiss_all.setTarget_(target)
+            menu.addItem_(dismiss_all)
+        menu.addItem_(NSMenuItem.separatorItem())
 
     menu.addItem_(disabled_menu_item("Agents"))
 
@@ -5920,6 +6027,79 @@ def device_display_label(display: str) -> str:
     if display == LED_DISPLAY_CUSTOM:
         return "Manual"
     return "Agent Status"
+
+
+def build_alert_menu_item(alert: Alert, target) -> NSMenuItem:
+    title = f"⚠︎ ALERT: {compact_text(alert.message, 56)}"
+    item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+    item.setAttributedTitle_(
+        NSMutableAttributedString.alloc().initWithString_attributes_(
+            title,
+            {
+                NSFontAttributeName: NSFont.systemFontOfSize_weight_(
+                    NSFont.menuFontOfSize_(0).pointSize(), NSFontWeightBold
+                ),
+                NSForegroundColorAttributeName: NSColor.systemRedColor(),
+            },
+        )
+    )
+    item.setToolTip_(alert.message)
+    submenu = NSMenu.alloc().init()
+    submenu.addItem_(disabled_menu_item(compact_text(alert.message, 90)))
+    if alert.source:
+        submenu.addItem_(disabled_menu_item(f"From {alert.source}"))
+    raised = f"Raised {alert_time_label(alert.raised_at)}"
+    if alert.count > 1:
+        raised += f", {alert.count} times (last {alert_time_label(alert.last_raised_at)})"
+    submenu.addItem_(disabled_menu_item(raised))
+    submenu.addItem_(NSMenuItem.separatorItem())
+    dismiss = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Dismiss",
+        "dismissAlert:",
+        "",
+    )
+    dismiss.setTarget_(target)
+    dismiss.setRepresentedObject_(alert.alert_id)
+    submenu.addItem_(dismiss)
+    item.setSubmenu_(submenu)
+    return item
+
+
+def compact_text(text: str, limit: int) -> str:
+    return text if len(text) <= limit else f"{text[: limit - 1].rstrip()}…"
+
+
+def alert_summary(alerts: list[Alert]) -> str:
+    summary = compact_text(alerts[-1].message, 80)
+    if len(alerts) > 1:
+        summary += f" (+{len(alerts) - 1} more)"
+    return summary
+
+
+@lru_cache(maxsize=STATUS_ICON_FRAME_COUNT + 1)
+def alert_status_icon(frame: int | None = None):
+    """A red warning triangle; animation frames pulse it like the LEDs."""
+    source = image_for_symbol(ALERT_SYMBOL, "Alert")
+    if source is None:
+        return None
+    opacity = 1.0
+    if frame is not None:
+        pulse = (1.0 + math.cos(2.0 * math.pi * frame / STATUS_ICON_FRAME_COUNT)) / 2.0
+        opacity = 0.35 + 0.65 * pulse
+    image = NSImage.alloc().initWithSize_((18.0, 18.0))
+    image.lockFocus()
+    try:
+        source.drawInRect_fromRect_operation_fraction_(
+            ((1.5, 1.5), (15.0, 15.0)), image_source_rect(source),
+            NSCompositingOperationSourceOver, opacity,
+        )
+        NSColor.systemRedColor().set()
+        NSRectFillUsingOperation(((0.0, 0.0), (18.0, 18.0)), NSCompositingOperationSourceIn)
+    finally:
+        image.unlockFocus()
+    # Coloured on purpose: a template image would be drawn monochrome.
+    image.setTemplate_(False)
+    return image
 
 
 def disabled_menu_item(title: str) -> NSMenuItem:

@@ -323,6 +323,44 @@ service on either computer with:
 sidepulse service status
 ```
 
+## Emergency Alerts
+
+Raise an alert from any script, cron job, or agent hook:
+
+```sh
+sidepulse alert raise "Backup disk almost full" --source backup
+```
+
+While any alert is active, every display SidePulse drives pulses red, overriding
+agent, battery, lid, and preview animations. That covers SidePulse Pro and Dot,
+the SidePulse Notch (even with the rainbow theme), and linked phones. The menu-bar
+icon turns into a pulsing red warning triangle, and each alert is listed as a red
+**ALERT** row at the top of the SidePulse menu. An alert stays active, including
+across restarts, until you dismiss it from its row's submenu, with **Dismiss All
+Alerts**, or from the command line:
+
+```sh
+sidepulse alert list
+sidepulse alert dismiss 2f09ad00
+sidepulse alert dismiss --all
+```
+
+Raising the same message from the same source again updates the existing alert
+and counts the repeats, instead of adding another. Use `--key` to group alerts on
+your own terms: raising `--key disk` again replaces that alert's message.
+
+With no message, `raise` reads stdin, so it can be used directly as an agent hook
+command. A hook's JSON payload supplies the message and the event name as the
+source. `--quiet` prints nothing:
+
+```sh
+sidepulse alert raise --quiet
+```
+
+Devices set to **Custom** display are left alone, and lid animations and
+**Show on device** previews wait until alerts are dismissed. Alerts are stored in
+`~/.local/state/sidepulse/agent-monitor/alerts.json`.
+
 ## Battery LEDs
 
 Show the current Mac battery state:

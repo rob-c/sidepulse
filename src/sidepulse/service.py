@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 
+from .alerts import alert_program, load_alerts
 from .battery import program_for_battery, read_battery_snapshot
 from .collector import LiveAgentMonitor, default_sources
 from .device_writer import DeviceWriteError, discover_devices, write_led_program
@@ -142,6 +143,8 @@ class SidePulseService:
         if status_bar_monitor_available():
             return
         settings = load_settings()
+        # An active alert overrides every display SidePulse drives until dismissed.
+        alerting = bool(load_alerts())
         snapshot = self.monitor.snapshot(include_stale=False)
         mode = snapshot.aggregate.mode
         battery = None
@@ -158,7 +161,9 @@ class SidePulseService:
             display = settings.display_for_device(device_id)
             if display == LED_DISPLAY_CUSTOM:
                 continue
-            if display == LED_DISPLAY_BATTERY and battery is not None:
+            if alerting:
+                program = alert_program(settings.brightness_for_device(device_id))
+            elif display == LED_DISPLAY_BATTERY and battery is not None:
                 program = program_for_battery(
                     battery,
                     led_count=led_count_for_target(candidate.target),
@@ -191,16 +196,19 @@ class SidePulseService:
             device_id = f"{LINKED_PHONE_DEVICE_PREFIX}{link.link_id}"
             if settings.display_for_device(device_id) == LED_DISPLAY_CUSTOM:
                 continue
-            animation = settings.agent_animation(mode)
-            try:
-                program = program_for_agent_mode(
-                    mode,
-                    led_count=8,
-                    animation_style=animation.style,
-                    custom_program=animation.custom_program,
-                )
-            except DeviceWriteError:
-                continue
+            if alerting:
+                program = alert_program()
+            else:
+                animation = settings.agent_animation(mode)
+                try:
+                    program = program_for_agent_mode(
+                        mode,
+                        led_count=8,
+                        animation_style=animation.style,
+                        custom_program=animation.custom_program,
+                    )
+                except DeviceWriteError:
+                    continue
             key = f"phone:{link.link_id}"
             active_targets.add(key)
             if self.last_program_by_target.get(key) == program:

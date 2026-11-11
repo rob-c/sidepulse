@@ -15,6 +15,14 @@ import uuid
 from pathlib import Path
 
 from . import __version__
+from .alerts import (
+    alert_time_label,
+    dismiss_alert,
+    dismiss_all_alerts,
+    load_alerts,
+    message_from_payload,
+    raise_alert,
+)
 from .battery import (
     BatteryLedController,
     format_watts,
@@ -226,11 +234,103 @@ def build_sidepulse_parser() -> argparse.ArgumentParser:
     settings.set_defaults(func=cmd_sidepulse_settings)
     add_sidepulse_sdejectguard_parser(subparsers)
     add_sidepulse_battery_parser(subparsers)
+    add_sidepulse_alert_parser(subparsers)
     # Agent configs written by older installs invoke `sidepulse hook-log`
     # directly, and `python -m sidepulse` lands here too, so both CLIs must
     # accept it.
     add_hook_log_parser(subparsers)
     return parser
+
+
+def add_sidepulse_alert_parser(subparsers: argparse._SubParsersAction) -> None:
+    alert = subparsers.add_parser(
+        "alert",
+        help="Raise an emergency alert that pulses every SidePulse display red until dismissed.",
+        description=(
+            "Emergency alerts override everything SidePulse shows: every LED display it "
+            "drives pulses red, and the alert is listed at the top of the SidePulse menu, "
+            "until you dismiss it. Alerts persist across restarts."
+        ),
+    )
+    alert_subparsers = alert.add_subparsers(dest="alert_command", required=True)
+
+    raise_parser = alert_subparsers.add_parser(
+        "raise",
+        help="Raise an alert. With no message, read text or an agent hook's JSON from stdin.",
+    )
+    raise_parser.add_argument("message", nargs="*", help="Alert message.")
+    raise_parser.add_argument("--source", default="", help="What raised it, shown in the menu.")
+    raise_parser.add_argument(
+        "--key",
+        help="Raising the same key again updates that alert instead of adding another. "
+        "Defaults to the source and message.",
+    )
+    raise_parser.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="Print nothing, for use as an agent hook command.",
+    )
+    raise_parser.set_defaults(func=cmd_sidepulse_alert_raise)
+
+    list_parser = alert_subparsers.add_parser("list", help="List active alerts.")
+    list_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    list_parser.set_defaults(func=cmd_sidepulse_alert_list)
+
+    dismiss_parser = alert_subparsers.add_parser("dismiss", help="Dismiss alerts by ID, or all of them.")
+    dismiss_parser.add_argument("alert_ids", nargs="*", metavar="ID", help="Alert ID from `sidepulse alert list`.")
+    dismiss_parser.add_argument("--all", action="store_true", help="Dismiss every active alert.")
+    dismiss_parser.set_defaults(func=cmd_sidepulse_alert_dismiss)
+
+
+def cmd_sidepulse_alert_raise(args: argparse.Namespace) -> int:
+    message = " ".join(args.message).strip()
+    source = args.source
+    if not message and not sys.stdin.isatty():
+        message, payload_source = message_from_payload(sys.stdin.read())
+        source = source or payload_source
+    alert = raise_alert(message, source=source, key=args.key)
+    if not args.quiet:
+        repeat = f", raised {alert.count} times" if alert.count > 1 else ""
+        print(f"ALERT {alert.alert_id}: {alert.message}{repeat}")
+    return 0
+
+
+def cmd_sidepulse_alert_list(args: argparse.Namespace) -> int:
+    alerts = load_alerts()
+    if args.json:
+        print(json.dumps([alert.to_dict() for alert in alerts], indent=2, ensure_ascii=False))
+        return 0
+    if not alerts:
+        print("No active alerts.")
+        return 0
+    for alert in alerts:
+        details = [alert_time_label(alert.raised_at)]
+        if alert.source:
+            details.append(alert.source)
+        if alert.count > 1:
+            details.append(f"{alert.count} times")
+        print(f"{alert.alert_id}  {alert.message}  ({', '.join(details)})")
+    return 0
+
+
+def cmd_sidepulse_alert_dismiss(args: argparse.Namespace) -> int:
+    if args.all:
+        if args.alert_ids:
+            print("Give alert IDs or --all, not both.", file=sys.stderr)
+            return 2
+        count = dismiss_all_alerts()
+        print(f"Dismissed {count} alert{'s' if count != 1 else ''}." if count else "No active alerts.")
+        return 0
+    if not args.alert_ids:
+        print("Give an alert ID from `sidepulse alert list`, or --all.", file=sys.stderr)
+        return 2
+    status = 0
+    for alert_id in args.alert_ids:
+        if dismiss_alert(alert_id):
+            print(f"Dismissed {alert_id}.")
+        else:
+            print(f"No active alert with ID {alert_id}.", file=sys.stderr)
+            status = 1
+    return status
 
 
 def add_sidepulse_delivery_arguments(parser: argparse.ArgumentParser) -> None:

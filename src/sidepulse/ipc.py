@@ -43,6 +43,17 @@ def request_settings_window(*, socket_path: Path | None = None) -> bool:
     return False
 
 
+def notify_alerts_changed(
+    *,
+    socket_path: Path | None = None,
+    timeout: float = HOOK_EVENT_SEND_TIMEOUT_SECONDS,
+) -> bool:
+    """Tell a running menu-bar app to reload alerts now instead of on its next poll."""
+    payload = b'{"command":"alerts-changed"}'
+    targets = (socket_path,) if socket_path is not None else candidate_event_socket_paths()
+    return any(_send_payload(target.expanduser(), payload, timeout) for target in targets)
+
+
 def send_hook_event(
     provider: str,
     line: dict,
@@ -88,9 +99,11 @@ class HookEventServer:
         *,
         socket_path: Path | None = None,
         on_open_settings: Callable[[], None] | None = None,
+        on_alerts_changed: Callable[[], None] | None = None,
     ) -> None:
         self.on_event = on_event
         self.on_open_settings = on_open_settings
+        self.on_alerts_changed = on_alerts_changed
         self.socket_path = (socket_path or default_event_socket_path()).expanduser()
         self.socket: socket.socket | None = None
         self.thread: threading.Thread | None = None
@@ -173,6 +186,10 @@ class HookEventServer:
                     connection.sendall(b"ok")
                 except OSError:
                     pass
+            return
+        if message.get("command") == "alerts-changed":
+            if self.on_alerts_changed is not None:
+                self.on_alerts_changed()
             return
         provider = message.get("provider")
         line = message.get("line")
