@@ -22,11 +22,16 @@ from .providers import (
     GROK_EVENTS,
     JUNIE_EVENTS,
     JUNIE_MONITOR_EVENTS,
+    PI_EXTENSION_MARKER,
     default_cursor_hook_config_path,
     default_grok_hook_config_path,
     default_junie_hook_config_path,
+    default_pi_extension_path,
     detect_log_path,
 )
+
+PI_EXTENSION_TEMPLATE = "pi_extension.ts"
+PI_HOOK_COMMAND_PLACEHOLDER = "__SIDEPULSE_HOOK_COMMAND__"
 
 MANAGED_START = "# >>> agent-monitor hooks >>>"
 MANAGED_END = "# <<< agent-monitor hooks <<<"
@@ -344,6 +349,78 @@ def uninstall_junie_hooks(
     return InstallResult("junie", config, target_log, changed, backup, dry_run)
 
 
+def install_pi_hooks(
+    log_path: Path | None = None,
+    config_path: Path | None = None,
+    dry_run: bool = False,
+    python_executable: str | None = None,
+) -> InstallResult:
+    """Write the SidePulse extension into pi's global extensions directory.
+
+    pi has no hook configuration, so the "config" is a generated extension file. A
+    file at that path that SidePulse did not generate is backed up outside the
+    extensions directory before it is replaced, so pi never loads both.
+    """
+    config = config_path or default_pi_extension_path()
+    target_log = (log_path or detect_log_path("pi")).expanduser()
+    text = render_pi_extension(hook_argv("pi", target_log, python_executable))
+    original = _read_text_or_none(config)
+
+    changed = original != text
+    backup = None
+    if changed and not dry_run:
+        config.parent.mkdir(parents=True, exist_ok=True)
+        if original is not None and PI_EXTENSION_MARKER not in original:
+            backup = backup_file(config, pi_extension_backup_dir(config))
+        config.write_text(text, encoding="utf-8")
+        target_log.parent.mkdir(parents=True, exist_ok=True)
+        target_log.touch(exist_ok=True)
+
+    return InstallResult("pi", config, target_log, changed, backup, dry_run)
+
+
+def uninstall_pi_hooks(
+    log_path: Path | None = None,
+    config_path: Path | None = None,
+    dry_run: bool = False,
+) -> InstallResult:
+    """Remove the SidePulse pi extension, leaving any file SidePulse did not write."""
+    config = config_path or default_pi_extension_path()
+    target_log = (log_path or detect_log_path("pi")).expanduser()
+    original = _read_text_or_none(config)
+    changed = original is not None and PI_EXTENSION_MARKER in original
+    if changed and not dry_run:
+        try:
+            config.unlink()
+        except FileNotFoundError:
+            pass
+
+    return InstallResult("pi", config, target_log, changed, None, dry_run)
+
+
+def render_pi_extension(argv: list[str]) -> str:
+    from importlib.resources import files
+
+    template = files("sidepulse.resources").joinpath(PI_EXTENSION_TEMPLATE).read_text(encoding="utf-8")
+    if PI_HOOK_COMMAND_PLACEHOLDER not in template:
+        raise RuntimeError(f"{PI_EXTENSION_TEMPLATE} has no hook command placeholder")
+    return template.replace(PI_HOOK_COMMAND_PLACEHOLDER, json.dumps(argv))
+
+
+def pi_extension_backup_dir(config: Path) -> Path:
+    # Outside extensions/, which pi scans for extensions to load.
+    return config.parent.parent / "sidepulse-backups"
+
+
+def _read_text_or_none(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except UnicodeDecodeError:
+        return ""
+
+
 def install_cursor_hooks(
     log_path: Path | None = None,
     config_path: Path | None = None,
@@ -480,37 +557,27 @@ def remove_cursor_hook_entries(entries: list[Any]) -> list[Any]:
     ]
 
 
+def hook_argv(
+    provider: str,
+    log_path: Path,
+    python_executable: str | None = None,
+) -> list[str]:
+    """The hook process arguments, for agents that spawn hooks without a shell."""
+    executable = python_executable or sys.executable or "python3"
+    log = str(log_path.expanduser())
+    if getattr(sys, "frozen", False) and python_executable is None:
+        return [executable, "agent-monitor", "hook-log", "--provider", provider, "--log", log]
+    entry_point = Path(__file__).with_name("hook_entry.py")
+    return [executable, str(entry_point), "--provider", provider, "--log", log]
+
+
 def hook_command(
     provider: str,
     log_path: Path,
     python_executable: str | None = None,
 ) -> str:
-    executable = python_executable or sys.executable or "python3"
-    if getattr(sys, "frozen", False) and python_executable is None:
-        command = " ".join(
-            [
-                shlex.quote(executable),
-                "agent-monitor",
-                "hook-log",
-                "--provider",
-                shlex.quote(provider),
-                "--log",
-                shlex.quote(str(log_path.expanduser())),
-            ]
-        )
-        return fail_open_command(command)
-    entry_point = Path(__file__).with_name("hook_entry.py")
-    command = " ".join(
-        [
-            shlex.quote(executable),
-            shlex.quote(str(entry_point)),
-            "--provider",
-            shlex.quote(provider),
-            "--log",
-            shlex.quote(str(log_path.expanduser())),
-        ]
-    )
-    return fail_open_command(command)
+    argv = hook_argv(provider, log_path, python_executable)
+    return fail_open_command(" ".join(shlex.quote(part) for part in argv))
 
 
 def fail_open_command(command: str) -> str:

@@ -370,7 +370,7 @@ SidePulse Pro and SidePulse Dot.
 
 #### AI Agent Monitoring
 
-SidePulse can monitor AI agents such as Codex, Claude, Grok, Cursor, and Junie through hooks, then
+SidePulse can monitor AI agents such as Codex, Claude, Grok, Cursor, Junie, and pi through hooks, then
 translate the current agent state into a small, glanceable LED status.
 
 Agent status modes:
@@ -526,7 +526,7 @@ sidepulse setup
 ```
 
 `sidepulse setup` installs or refreshes all supported agent hooks, including
-Junie CLI, installs SidePulse Pro Eject Prevention, writes the status-bar
+Junie CLI and the pi extension, installs SidePulse Pro Eject Prevention, writes the status-bar
 LaunchAgent, starts both helpers immediately, and enables them at login. This is
 intentionally an explicit command instead of a `pip install` side effect. To set
 up only one provider, pass its name, for example `sidepulse setup junie`.
@@ -593,6 +593,7 @@ sidepulse agent-monitor install claude
 sidepulse agent-monitor install grok
 sidepulse agent-monitor install cursor
 sidepulse agent-monitor install junie
+sidepulse agent-monitor install pi
 ```
 
 Each hook invokes a small, standard-library-only Python entry point. It writes
@@ -664,7 +665,7 @@ Codex `PermissionRequest` events are treated as Ask and remain sticky until the
 matching tool command finishes. This prevents unrelated same-session activity
 from hiding an approval prompt that is still waiting on the user.
 
-For Codex, Claude, Grok, Cursor, or Junie projects that should report this reliably, add
+For Codex, Claude, Grok, Cursor, Junie, or pi projects that should report this reliably, add
 guidance like this to the relevant agent instructions:
 
 ```text
@@ -701,6 +702,7 @@ sidepulse agent-monitor uninstall claude
 sidepulse agent-monitor uninstall grok
 sidepulse agent-monitor uninstall cursor
 sidepulse agent-monitor uninstall junie
+sidepulse agent-monitor uninstall pi
 ```
 
 Install and start the macOS status-bar app:
@@ -770,7 +772,7 @@ firmware/websim `sdled.wasm` engine, then AppKit only draws the returned RGB
 frames.
 
 Open `Settings...` from the dropdown to manage agent integrations. The settings
-window can install or uninstall Codex, Claude, Grok, and Junie hooks. The transcript
+window can install or uninstall Codex, Claude, Grok, Cursor, Junie, and pi hooks. The transcript
 checkboxes control the file-based CLI/debug fallback; the status-bar app gets
 live updates from the local hook event socket. Settings are stored at
 `${XDG_CONFIG_HOME:-~/.config}/sidepulse/agent-monitor/settings.json`.
@@ -781,6 +783,17 @@ connected to a JetBrains IDE; Junie hosted directly through IDE/ACP does not yet
 emit hooks. SidePulse intentionally does not register a Junie `PermissionRequest`
 hook because a successful observer hook would automatically approve the requested
 action. Junie's normal approval prompts therefore remain unchanged.
+
+pi has no hook configuration, only TypeScript extensions, so SidePulse installs a
+generated extension at `~/.pi/agent/extensions/sidepulse.ts` (or under
+`$PI_CODING_AGENT_DIR`). It forwards pi's session, prompt, tool, dialog,
+compaction, and run-settled events to the same hook entry point as the other
+agents. Run `/reload` in open pi sessions after installing. Extension dialogs
+that block on the user show as Ask, and runs are reported once pi has settled,
+after any retries or queued follow-ups. Set `PI_SIDEPULSE=0` to turn the
+extension off for one pi process. Uninstall removes the file only if SidePulse
+generated it; install backs up a different file at that path to
+`~/.pi/agent/sidepulse-backups/` before replacing it.
 
 Settings can export the hook decision log as CSV or HTML. This log lives at
 `${XDG_STATE_HOME:-~/.local/state}/sidepulse/agent-monitor/event-status.jsonl`

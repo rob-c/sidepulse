@@ -114,11 +114,13 @@ from .install import (
     install_cursor_hooks,
     install_grok_hooks,
     install_junie_hooks,
+    install_pi_hooks,
     uninstall_claude_hooks,
     uninstall_codex_hooks,
     uninstall_cursor_hooks,
     uninstall_grok_hooks,
     uninstall_junie_hooks,
+    uninstall_pi_hooks,
 )
 from .led_status import (
     AgentLedController,
@@ -156,6 +158,7 @@ from .providers import (
     detect_cursor_config,
     detect_grok_config,
     detect_junie_config,
+    detect_pi_config,
     default_state_dir,
     parse_log_line,
 )
@@ -969,6 +972,14 @@ class StatusBarController(NSObject):
         self.update_hooks("junie", install=False)
 
     @objc.IBAction
+    def installPiHooks_(self, _sender):
+        self.update_hooks("pi", install=True)
+
+    @objc.IBAction
+    def uninstallPiHooks_(self, _sender):
+        self.update_hooks("pi", install=False)
+
+    @objc.IBAction
     def toggleCodexTranscripts_(self, sender):
         self.set_transcript_monitoring("codex", sender.state() == NSOnState)
 
@@ -1524,6 +1535,7 @@ class StatusBarController(NSObject):
         grok = detect_grok_config()
         cursor = detect_cursor_config()
         junie = detect_junie_config()
+        pi = detect_pi_config()
         set_field_value(
             self.settings_fields.get("codex_hook_status"),
             hook_status_text(codex),
@@ -1543,6 +1555,10 @@ class StatusBarController(NSObject):
         set_field_value(
             self.settings_fields.get("junie_hook_status"),
             hook_status_text(junie),
+        )
+        set_field_value(
+            self.settings_fields.get("pi_hook_status"),
+            hook_status_text(pi),
         )
         set_field_value(
             self.settings_fields.get("settings_path"),
@@ -1756,19 +1772,25 @@ class StatusBarController(NSObject):
                 result = install_junie_hooks()
             elif provider == "junie":
                 result = uninstall_junie_hooks()
+            elif provider == "pi" and install:
+                result = install_pi_hooks()
+            elif provider == "pi":
+                result = uninstall_pi_hooks()
             else:
                 raise ValueError(f"Unsupported hook provider: {provider}")
         except Exception as exc:
-            self.set_settings_message(f"{provider.title()} hooks failed: {exc}")
+            self.set_settings_message(f"{provider_label(provider)} hooks failed: {exc}")
             self.refresh_settings_window()
             return
 
         action = "installed" if install else "removed"
         if not result.changed:
             action = "already installed" if install else "already removed"
-        message = f"{provider.title()} hooks {action}."
+        message = f"{provider_label(provider)} hooks {action}."
         if provider == "codex" and install and result.changed:
             message += " Restart Codex to activate them in new sessions."
+        if provider == "pi" and install and result.changed:
+            message += " Run /reload in open pi sessions to activate them."
         self.set_settings_message(message)
         self.reload_monitor()
         self.refresh_settings_window()
@@ -4649,7 +4671,9 @@ def build_settings_window(target: StatusBarController) -> NSWindow:
     secondary_action_x = 500
     value_width = primary_action_x - value_x - 5
 
-    add_label(agents_tab, "Agent Hooks", section_x, 398, 200, 24)
+    # Six hook rows fit above the separator by moving the header up; the visible tab
+    # content is 450 points tall.
+    add_label(agents_tab, "Agent Hooks", section_x, 412, 200, 24)
 
     def add_hook_row(
         title: str,
@@ -4682,20 +4706,21 @@ def build_settings_window(target: StatusBarController) -> NSWindow:
         return status
 
     codex_status = add_hook_row(
-        "Codex", 364, "installCodexHooks:", "uninstallCodexHooks:"
+        "Codex", 382, "installCodexHooks:", "uninstallCodexHooks:"
     )
     claude_status = add_hook_row(
-        "Claude", 338, "installClaudeHooks:", "uninstallClaudeHooks:"
+        "Claude", 356, "installClaudeHooks:", "uninstallClaudeHooks:"
     )
     grok_status = add_hook_row(
-        "Grok", 312, "installGrokHooks:", "uninstallGrokHooks:"
+        "Grok", 330, "installGrokHooks:", "uninstallGrokHooks:"
     )
     cursor_status = add_hook_row(
-        "Cursor", 286, "installCursorHooks:", "uninstallCursorHooks:"
+        "Cursor", 304, "installCursorHooks:", "uninstallCursorHooks:"
     )
     junie_status = add_hook_row(
-        "Junie", 260, "installJunieHooks:", "uninstallJunieHooks:"
+        "Junie", 278, "installJunieHooks:", "uninstallJunieHooks:"
     )
+    pi_status = add_hook_row("pi", 252, "installPiHooks:", "uninstallPiHooks:")
 
     add_separator(agents_tab, section_x, 246, tab_width - 48)
     add_label(agents_tab, "Session Opening", section_x, 220, 240, 24)
@@ -4959,6 +4984,7 @@ def build_settings_window(target: StatusBarController) -> NSWindow:
         "grok_hook_status": grok_status,
         "cursor_hook_status": cursor_status,
         "junie_hook_status": junie_status,
+        "pi_hook_status": pi_status,
         "debug_log_status": debug_log_status,
         "codex_session_opener": codex_opener,
         "claude_session_opener": claude_opener,

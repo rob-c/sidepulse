@@ -211,6 +211,18 @@ def hook_log_main(provider: str, log_path: Path, event: str | None = None) -> in
             payload = raw if isinstance(raw, dict) else {}
             normalized = normalize_junie_payload(payload, log_path)
             payload_text = json.dumps(normalized, separators=(",", ":"), ensure_ascii=False)
+        elif provider == "pi":
+            from .pi_hook import normalize_payload as normalize_pi_payload
+
+            try:
+                raw = json.loads(payload_text or "{}")
+            except json.JSONDecodeError:
+                raw = None  # Logged below as a ParseError breadcrumb.
+            if isinstance(raw, dict):
+                normalized = normalize_pi_payload(raw)
+                if normalized is None:
+                    return 0
+                payload_text = json.dumps(normalized, separators=(",", ":"), ensure_ascii=False)
 
         actual_provider, actual_log_path, line = routed_hook_payload(
             provider,

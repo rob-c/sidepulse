@@ -90,7 +90,30 @@ JUNIE_MONITOR_EVENTS = tuple(
     event for event in JUNIE_EVENTS if event != "PermissionRequest"
 )
 
-HOOK_PROVIDERS = ("codex", "claude", "grok", "cursor", "junie")
+# pi has no hook configuration, only TypeScript extensions. SidePulse installs an
+# extension that forwards these pi lifecycle events to the hook entry point, where
+# sidepulse.pi_hook maps them onto the events above.
+PI_EVENTS = (
+    "session_start",
+    "before_agent_start",
+    "tool_execution_start",
+    "tool_execution_end",
+    "ui_prompt_start",
+    "ui_prompt_end",
+    "session_before_compact",
+    "session_compact",
+    "session_compact_failed",
+    "agent_settled",
+    "session_shutdown",
+)
+# Identifies the extension file SidePulse generated, so uninstall and reinstall never
+# delete or silently replace a file the user wrote.
+PI_EXTENSION_MARKER = "sidepulse:managed-pi-extension"
+PI_HOOK_COMMAND_PATTERN = re.compile(
+    r"^const HOOK_COMMAND: string\[\] = (\[.*\]);\s*$", re.MULTILINE
+)
+
+HOOK_PROVIDERS = ("codex", "claude", "grok", "cursor", "junie", "pi")
 KNOWN_EVENTS = tuple(
     dict.fromkeys(CODEX_EVENTS + CLAUDE_EVENTS + GROK_EVENTS + JUNIE_EVENTS)
 )
@@ -153,6 +176,7 @@ def detect_provider_configs(home: Path | None = None) -> list[ProviderConfig]:
         detect_grok_config(home),
         detect_cursor_config(home),
         detect_junie_config(home),
+        detect_pi_config(home),
     ]
 
 
@@ -382,6 +406,63 @@ def detect_junie_config(home: Path | None = None) -> ProviderConfig:
     )
 
 
+def default_pi_agent_dir(home: Path | None = None) -> Path:
+    """pi's config directory, honouring PI_CODING_AGENT_DIR like pi itself does."""
+    if home is None:
+        override = os.environ.get("PI_CODING_AGENT_DIR")
+        if override:
+            return Path(override).expanduser()
+    base = home or Path.home()
+    return base / ".pi" / "agent"
+
+
+def default_pi_extension_path(home: Path | None = None) -> Path:
+    # pi auto-loads every *.ts file in its global extensions directory.
+    return default_pi_agent_dir(home) / "extensions" / "sidepulse.ts"
+
+
+def detect_pi_config(home: Path | None = None) -> ProviderConfig:
+    config_path = default_pi_extension_path(home)
+    if not config_path.exists():
+        return ProviderConfig("pi", config_path, False, False, (), ())
+
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ProviderConfig("pi", config_path, True, False, (), ())
+    if PI_EXTENSION_MARKER not in text:
+        return ProviderConfig("pi", config_path, True, False, (), ())
+
+    hook_events = tuple(sorted(event for event in PI_EVENTS if f'"{event}"' in text))
+    paths: list[Path] = []
+    argv = pi_extension_hook_command(text)
+    if argv:
+        paths.extend(extract_log_paths_from_command(shlex.join(argv)))
+
+    return ProviderConfig(
+        "pi",
+        config_path,
+        True,
+        bool(hook_events) and argv is not None,
+        hook_events,
+        _dedupe_paths(paths),
+    )
+
+
+def pi_extension_hook_command(text: str) -> list[str] | None:
+    """Return the hook command baked into a SidePulse-generated pi extension."""
+    match = PI_HOOK_COMMAND_PATTERN.search(text)
+    if not match:
+        return None
+    try:
+        argv = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(argv, list) or not argv or not all(isinstance(part, str) for part in argv):
+        return None
+    return argv
+
+
 def _entry_has_sidepulse_hook(entry: Any) -> bool:
     if not isinstance(entry, dict):
         return False
@@ -423,6 +504,8 @@ def detect_log_path(provider: str, home: Path | None = None) -> Path:
         config = detect_cursor_config(home)
     elif provider == "junie":
         config = detect_junie_config(home)
+    elif provider == "pi":
+        config = detect_pi_config(home)
     else:
         config = ProviderConfig(provider, default_log_path(provider, home), False, False, (), ())
     if config.log_paths:

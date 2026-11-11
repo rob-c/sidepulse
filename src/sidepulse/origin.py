@@ -147,6 +147,8 @@ def origin_from_processes(
             return surface_origin(provider, "cli", "process:grok")
         if provider == "junie" and basename == "junie":
             return surface_origin(provider, "cli", "process:junie")
+        if provider == "pi" and is_pi_process(info):
+            return surface_origin(provider, "cli", "process:pi")
 
     return None
 
@@ -174,6 +176,10 @@ def surface_origin(provider: str, surface: str, source: str) -> AgentOrigin:
         ("junie", "cli"): "Junie CLI",
         ("junie", "ide"): "Junie in JetBrains IDE",
         ("junie", "transcript"): "Junie Transcript",
+        ("pi", "cli"): "pi CLI",
+        ("pi", "vscode"): "pi in VS Code",
+        ("pi", "cursor"): "pi in Cursor",
+        ("pi", "windsurf"): "pi in Windsurf",
     }
     label = labels.get((provider, surface), provider_label(provider))
     return AgentOrigin(
@@ -242,6 +248,20 @@ def process_basename(info: ProcessInfo) -> str:
         if name and name not in {"sh", "bash", "zsh", "python", "python3", "env"}:
             return name
     return ""
+
+
+def is_pi_process(info: ProcessInfo) -> bool:
+    """pi is a Node script, so its process is `node …/bin/pi`, not `pi`."""
+    if process_basename(info) == "pi":
+        return True
+    try:
+        split = shlex.split(info.command)
+    except ValueError:
+        split = info.command.split()
+    if len(split) < 2 or Path(split[0]).name.lower() not in {"node", "bun"}:
+        return False
+    script = split[1].lower()
+    return Path(script).name == "pi" or "/pi-coding-agent/" in script
 
 
 def terminal_environment(env: Mapping[str, str]) -> bool:

@@ -4018,6 +4018,13 @@ class AgentMonitorTests(unittest.TestCase):
             changed=True,
             backup_path=None,
         )
+        pi_result = SimpleNamespace(
+            provider="pi",
+            config_path=Path("/tmp/pi-extensions/sidepulse.ts"),
+            log_path=Path("/tmp/pi.jsonl"),
+            changed=True,
+            backup_path=None,
+        )
         launch_result = SimpleNamespace(
             plist_path=Path("/tmp/io.sidepulse.agentstatus.plist"),
             changed=True,
@@ -4057,6 +4064,7 @@ class AgentMonitorTests(unittest.TestCase):
             ) as cursor,
             patch.object(cli_module, "install_grok_hooks", return_value=grok_result) as grok,
             patch.object(cli_module, "install_junie_hooks", return_value=junie_result) as junie,
+            patch.object(cli_module, "install_pi_hooks", return_value=pi_result) as pi,
             patch(
                 "sidepulse.sd_eject_guard_launch.install_sd_eject_guard",
                 return_value=guard_result,
@@ -4074,6 +4082,7 @@ class AgentMonitorTests(unittest.TestCase):
         cursor.assert_called_once()
         grok.assert_called_once()
         junie.assert_called_once()
+        pi.assert_called_once()
         guard.assert_called_once_with(scope="auto", dry_run=False)
         launch.assert_called_once_with(start=True)
         service.assert_called_once_with(start=True, dry_run=False)
@@ -6129,6 +6138,7 @@ class AgentMonitorTests(unittest.TestCase):
         self.assertIn("claude", providers)
         self.assertIn("grok", providers)
         self.assertIn("junie", providers)
+        self.assertIn("pi", providers)
         self.assertNotIn("codex-transcripts", providers)
         self.assertNotIn("claude-transcripts", providers)
 
