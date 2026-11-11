@@ -1,0 +1,88 @@
+name: GitHub release
+
+# Builds SidePulse from the chosen branch and attaches the wheel, source archive,
+# and checksums to a new GitHub release. Nothing is uploaded to PyPI.
+#
+# Start it from the Actions tab ("Run workflow"), or:
+#   gh workflow run github-release.yml --ref main
+#
+# Releases are tagged pi-v<version>. Tags that start with "v" are left to the
+# upstream PyPI pipeline (publish.yml), which cannot publish from a fork.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-release
+  cancel-in-progress: false
+
+jobs:
+  # A release must not ship code the test suite rejects.
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  release:
+    name: Build and publish
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag and the release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The same calendar format as upstream releases: 1.YYYYMMDD.SECONDS (UTC).
+      - name: Choose version
+        id: version
+        run: |
+          version="$(python - <<'PY'
+          from datetime import datetime, timezone
+
+          now = datetime.now(timezone.utc)
+          print(f"1.{now:%Y%m%d}.{now.hour * 3600 + now.minute * 60 + now.second}")
+          PY
+          )"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=pi-v$version" >> "$GITHUB_OUTPUT"
+          echo "release version: $version"
+
+      # Tests ran in the job above. release.sh still checks the metadata and
+      # installs the built wheel into a clean environment before writing dist/.
+      - name: Build and verify
+        run: ./scripts/release.sh --version "${{ steps.version.outputs.version }}" --output-dir dist --skip-tests
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidepulse-${{ steps.version.outputs.version }}
+          path: dist/
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          wheel="$(cd dist && ls sidepulse-*.whl)"
+          wheel_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$wheel"
+          setup_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/scripts/setup.sh"
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          SidePulse $VERSION, built from $GITHUB_REF_NAME at $GITHUB_SHA, with pi coding agent support.
+
+          Install or upgrade on macOS or Linux:
+
+          ~~~sh
+          curl -fsSL $setup_url | SIDEPULSE_INSTALL_SPEC="$wheel_url" sh
+          ~~~
+
+          This replaces the SidePulse in ~/.local/share/sidepulse and runs sidepulse setup, which installs the pi extension. Run /reload in open pi sessions afterwards.
+
+          Note: plain sidepulse update installs the official release, which has no pi support.
+          EOF
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "SidePulse $VERSION (pi support)" \
+            --notes-file "$RUNNER_TEMP/notes.md"
