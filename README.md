@@ -361,6 +361,31 @@ Devices set to **Custom** display are left alone, and lid animations and
 **Show on device** previews wait until alerts are dismissed. Alerts are stored in
 `~/.local/state/sidepulse/agent-monitor/alerts.json`.
 
+## Music Spectrum
+
+Turn on **Music spectrum** under **Settings → Animations**, or **Music Spectrum**
+in the SidePulse menu, to show the Mac's sound output on your LEDs:
+
+- SidePulse Pro and the SidePulse Notch show an eight-band rainbow spectrum, bass
+  in red on the left through treble in violet on the right, each LED as bright as
+  its band.
+- SidePulse Dot pulses with the overall volume while its color cycles through the
+  rainbow.
+
+The spectrum takes over only while sound is playing; about 2.5 seconds after it
+stops, the LEDs go back to agent status. Alerts, the closed-lid hold, lid
+animations, and **Show on device** previews take priority. Devices set to
+**Custom** display and linked phones are left alone, and each device's brightness
+setting applies. Levels adjust to the music, so quiet and loud tracks both fill
+the display.
+
+The audio is captured with ScreenCaptureKit (macOS 13 or later). The first time
+you turn Music Spectrum on, macOS asks for **Screen & System Audio Recording**
+permission; SidePulse may be listed as **Python**, the interpreter it runs on. If
+you allow it in System Settings afterwards, turn Music Spectrum off and on again.
+Only audio is used: the captured video is a 2×2-pixel frame once a second, which is
+discarded. SidePulse's own sounds are excluded.
+
 ## Battery LEDs
 
 Show the current Mac battery state:

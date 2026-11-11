@@ -345,6 +345,13 @@ class VirtualLedView(NSView):
                 self.wasm_error = str(exc)
         self.setNeedsDisplay_(True)
 
+    def setFixedColors_(self, colors):
+        """Show these (red, green, blue, alpha) LED colors until a program is set."""
+        self.current_program = None
+        self.rendered_program = None
+        self.fixed_colors = [tuple(color) for color in colors]
+        self.setNeedsDisplay_(True)
+
     def setBatteryPercent_brightness_(self, percent, brightness):
         self.current_program = None
         self.rendered_program = None
@@ -581,6 +588,18 @@ class VirtualStatusDevice(NSObject):
     def set_battery(self, percent: int, brightness: int | float):
         self.show()
         self.view.setBatteryPercent_brightness_(percent, brightness)
+        self._stop_timer()
+
+    def set_colors(self, colors, brightness: int | float = 255):
+        """Draw one frame of live colors (0..1 RGB per LED); the caller paces frames."""
+        self.show()
+        scale = normalize_brightness(brightness) / 255.0
+        self.view.setFixedColors_(
+            [
+                (red * scale, green * scale, blue * scale, max(red, green, blue) * scale)
+                for red, green, blue in colors
+            ]
+        )
         self._stop_timer()
 
     def set_program(self, program: str):

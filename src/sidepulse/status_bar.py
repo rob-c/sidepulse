@@ -131,16 +131,25 @@ from .install import (
     uninstall_junie_hooks,
     uninstall_pi_hooks,
 )
+from .music_spectrum import (
+    LatestProgramWriter,
+    SpectrumAnalyzer,
+    device_program,
+    frame_colors,
+    spectrum_colors,
+)
 from .led_status import (
     AgentLedController,
     apply_brightness,
     brightness_percent,
+    led_count_for_target,
     normalize_brightness,
     normalized_device_name,
     program_for_agent_mode,
     write_mode_to_leds,
 )
 from .links import IOSLink, load_ios_links, remove_ios_link, send_ios_program
+from .system_audio import SystemAudioCapture, SystemAudioUnavailable
 from .virtual_device import (
     FRAME_INTERVAL,
     VIRTUAL_DEVICE_ID,
@@ -272,6 +281,10 @@ LINKED_PHONE_DEVICE_PREFIX = "ios/"
 LED_DISPLAY_ALERT = "alert"
 ALERT_SYMBOL = "exclamationmark.triangle.fill"
 MAX_MENU_ALERTS = 10
+SPECTRUM_FRAME_SECONDS = 1.0 / 30.0
+# Hardware reads a file per frame; 20 fps with a 70 ms fade looks smooth.
+SPECTRUM_DEVICE_FRAME_SECONDS = 1.0 / 20.0
+SPECTRUM_DEVICE_REFRESH_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -672,6 +685,15 @@ class StatusBarController(NSObject):
         self.led_animation_token = 0
         self.led_sync_retry_pending = False
         self.active_alerts: list[Alert] = []
+        self.spectrum_analyzer = SpectrumAnalyzer()
+        self.spectrum_capture = None
+        self.spectrum_writer = None
+        self.spectrum_timer = None
+        self.spectrum_driving = False
+        self.spectrum_devices: list[StatusBarDevice] = []
+        self.spectrum_devices_at = 0.0
+        self.spectrum_device_frame_at = 0.0
+        self.spectrum_error: str | None = None
         self.virtual_status_device = VirtualStatusDevice.alloc().init()
         return self
 
@@ -698,6 +720,8 @@ class StatusBarController(NSObject):
             self,
             "refresh:",
         )
+        if self.settings.music_spectrum_enabled:
+            self.start_music_spectrum()
         if not self.power_source_notifier.start():
             log_status_bar(
                 "power notification unavailable: "
@@ -970,6 +994,160 @@ class StatusBarController(NSObject):
             self.play_lid_animation(LID_ANIMATION_CLOSED)
 
     @objc.IBAction
+    def setMusicSpectrumFromCheckbox_(self, sender):
+        self.set_music_spectrum(sender.state() == NSOnState)
+
+    @objc.IBAction
+    def toggleMusicSpectrum_(self, _sender):
+        self.set_music_spectrum(not self.settings.music_spectrum_enabled)
+
+    def set_music_spectrum(self, enabled: bool) -> None:
+        try:
+            self.settings = self.settings.with_music_spectrum(enabled)
+            save_settings(self.settings)
+        except Exception as exc:
+            self.set_settings_message(f"Could not save the music spectrum setting: {exc}")
+            self.settings = load_settings()
+            self.refresh_settings_window()
+            return
+        if enabled:
+            self.start_music_spectrum()
+            self.set_settings_message(
+                "Music spectrum on. It shows on your LEDs while sound is playing."
+            )
+        else:
+            self.stop_music_spectrum()
+            self.set_settings_message("Music spectrum off.")
+        self.refresh_settings_window()
+        self.refresh_(None)
+
+    def start_music_spectrum(self) -> None:
+        if self.spectrum_writer is None:
+            self.spectrum_writer = LatestProgramWriter(
+                lambda program, target: write_led_program(program, device_path=target),
+                on_error=self.spectrum_write_failed,
+            )
+        if self.spectrum_capture is None:
+            self.spectrum_capture = SystemAudioCapture(
+                self.spectrum_analyzer.push,
+                on_error=self.spectrum_capture_failed,
+            )
+        self.spectrum_error = None
+        try:
+            self.spectrum_capture.start()
+        except SystemAudioUnavailable as exc:
+            self.show_music_spectrum_error(str(exc))
+            return
+        if self.spectrum_timer is None:
+            self.spectrum_timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
+                SPECTRUM_FRAME_SECONDS, self, "musicSpectrumTick:", None, True,
+            )
+            self.spectrum_timer.setTolerance_(0.005)
+            run_loop = NSRunLoop.mainRunLoop()
+            run_loop.addTimer_forMode_(self.spectrum_timer, NSRunLoopCommonModes)
+            run_loop.addTimer_forMode_(self.spectrum_timer, NSEventTrackingRunLoopMode)
+        log_status_bar("music_spectrum=listening")
+
+    def stop_music_spectrum(self, *, restore: bool = True) -> None:
+        if self.spectrum_timer is not None:
+            self.spectrum_timer.invalidate()
+            self.spectrum_timer = None
+        if self.spectrum_capture is not None:
+            self.spectrum_capture.stop()
+        self.spectrum_analyzer.reset()
+        if restore:
+            self.set_spectrum_driving(False)
+        else:
+            self.spectrum_driving = False
+        if self.spectrum_writer is not None:
+            self.spectrum_writer.stop()
+            self.spectrum_writer = None
+
+    def spectrum_may_drive(self) -> bool:
+        """Alerts, the lid-closed hold, and lid or preview animations come first."""
+        return (
+            self.settings.music_spectrum_enabled
+            and self.leds_enabled
+            and not self.active_alerts
+            and not self.lid_closed_led_hold_active
+            and time.monotonic() >= self.led_animation_until_monotonic
+        )
+
+    @objc.IBAction
+    def musicSpectrumTick_(self, _timer):
+        now = time.monotonic()
+        frame = self.spectrum_analyzer.analyze(now)
+        driving = frame.active and self.spectrum_may_drive()
+        self.set_spectrum_driving(driving)
+        if not driving:
+            return
+        if now - self.spectrum_devices_at >= SPECTRUM_DEVICE_REFRESH_SECONDS:
+            self.spectrum_devices_at = now
+            self.spectrum_devices = [
+                device
+                for device in self.status_bar_devices(remember=False)
+                if device.connected
+                and device.remote_link is None
+                and device.display != LED_DISPLAY_CUSTOM
+            ]
+        for device in self.spectrum_devices:
+            if device.device_id != VIRTUAL_DEVICE_ID:
+                continue
+            if SIDEPULSE_NOTCH_FEATURE_ENABLED and self.settings.virtual_status_device_enabled:
+                self.virtual_status_device.set_colors(spectrum_colors(frame), device.brightness)
+        if now - self.spectrum_device_frame_at < SPECTRUM_DEVICE_FRAME_SECONDS:
+            return
+        self.spectrum_device_frame_at = now
+        writer = self.spectrum_writer
+        if writer is None:
+            return
+        for device in self.spectrum_devices:
+            if device.device_id == VIRTUAL_DEVICE_ID:
+                continue
+            colors = frame_colors(frame, led_count_for_target(device.target), now)
+            writer.submit(device.target, apply_brightness(device_program(colors), device.brightness))
+
+    def set_spectrum_driving(self, driving: bool) -> None:
+        if driving == self.spectrum_driving:
+            return
+        self.spectrum_driving = driving
+        if driving:
+            self.spectrum_devices_at = 0.0
+            log_status_bar("music_spectrum=playing")
+            return
+        log_status_bar("music_spectrum=idle")
+        if self.spectrum_writer is not None:
+            self.spectrum_writer.forget()
+            # A frame still being written must land before agent status replaces it.
+            self.spectrum_writer.wait_idle(0.3)
+        self.reset_led_controllers_for_display_change()
+        if self.last_snapshot is not None:
+            self.sync_leds(
+                self.last_snapshot.aggregate.mode,
+                self.last_battery_snapshot,
+                self.active_led_display_kind(self.last_battery_snapshot),
+            )
+
+    def spectrum_capture_failed(self, message: str) -> None:
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "musicSpectrumFailed:", message, False,
+        )
+
+    @objc.IBAction
+    def musicSpectrumFailed_(self, message):
+        self.show_music_spectrum_error(str(message))
+
+    def show_music_spectrum_error(self, message: str) -> None:
+        self.spectrum_error = message
+        log_status_bar(f"music spectrum error: {message}")
+        self.set_settings_message(f"Music spectrum: {message}")
+        self.set_spectrum_driving(False)
+        self.refresh_settings_window()
+
+    def spectrum_write_failed(self, target: Path, error: Exception) -> None:
+        log_status_bar(f"music spectrum write error {target}: {error}")
+
+    @objc.IBAction
     def setRainbowThemeFromCheckbox_(self, sender):
         self.set_rainbow_theme(sender.state() == NSOnState)
 
@@ -1215,6 +1393,7 @@ class StatusBarController(NSObject):
         NSApp.terminate_(self)
 
     def applicationWillTerminate_(self, _notification):
+        self.stop_music_spectrum(restore=False)
         self.stop_status_icon_animation()
         self.power_source_notifier.stop()
         if self.battery_timer is not None:
@@ -1683,6 +1862,10 @@ class StatusBarController(NSObject):
         set_checkbox_state(
             self.settings_buttons.get("rainbow_theme"),
             self.settings.rainbow_theme_enabled,
+        )
+        set_checkbox_state(
+            self.settings_buttons.get("music_spectrum"),
+            self.settings.music_spectrum_enabled,
         )
         self.apply_rainbow_theme_to_previews()
         for provider in ("codex", "claude", "grok"):
@@ -3167,6 +3350,8 @@ class StatusBarController(NSObject):
             return
         if not self.settings.virtual_status_device_enabled:
             return
+        if self.spectrum_driving:
+            return
         device = next(
             (
                 item for item in self.status_bar_devices(remember=False)
@@ -3247,6 +3432,8 @@ class StatusBarController(NSObject):
 
         active_errors: dict[str, str] = {}
         for device in devices:
+            if self.spectrum_driving and device.remote_link is None:
+                continue  # Linked phones keep agent status; the music is local.
             device_display_kind = self.active_led_display_kind_for_device(
                 device,
                 battery_snapshot,
@@ -3825,6 +4012,20 @@ def build_menu(snapshot, state: StatusBarState, target: StatusBarController) -> 
         )
         virtual_toggle.setTarget_(target)
         menu.addItem_(virtual_toggle)
+    spectrum_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Music Spectrum",
+        "toggleMusicSpectrum:",
+        "",
+    )
+    spectrum_item.setTarget_(target)
+    music_spectrum_enabled = getattr(target.settings, "music_spectrum_enabled", False)
+    spectrum_item.setState_(1 if music_spectrum_enabled else 0)
+    menu.addItem_(spectrum_item)
+    spectrum_error = getattr(target, "spectrum_error", None)
+    if music_spectrum_enabled and spectrum_error:
+        error_item = disabled_menu_item(compact_text(f"Music spectrum: {spectrum_error}", 70))
+        error_item.setToolTip_(spectrum_error)
+        menu.addItem_(error_item)
 
     menu.addItem_(NSMenuItem.separatorItem())
     menu.addItem_(disabled_menu_item("Closed-Lid Sleep Prevention"))
@@ -4976,6 +5177,21 @@ def build_settings_window(target: StatusBarController) -> NSWindow:
         "Show the SidePulse Notch and these previews in a flowing rainbow, "
         "keeping each animation's movement. SidePulse devices keep their colors."
     )
+    music_spectrum = add_checkbox(
+        agent_animations_tab,
+        "Music spectrum",
+        276,
+        323,
+        200,
+        24,
+        target,
+        "setMusicSpectrumFromCheckbox:",
+    )
+    music_spectrum.setToolTip_(
+        "While sound is playing on this Mac, show a rainbow spectrum on SidePulse Pro "
+        "and the SidePulse Notch, and pulse SidePulse Dot with the volume. "
+        "macOS asks for Screen & System Audio Recording permission."
+    )
     selected_profile_id = getattr(
         target,
         "selected_agent_animation_profile_id",
@@ -5186,6 +5402,7 @@ def build_settings_window(target: StatusBarController) -> NSWindow:
         "battery_power_preview": battery_power_preview,
         "delete_agent_animation_profile": delete_animation_profile,
         "rainbow_theme": rainbow_theme,
+        "music_spectrum": music_spectrum,
     }
     return window
 

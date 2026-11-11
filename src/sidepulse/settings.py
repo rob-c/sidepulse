@@ -334,6 +334,8 @@ class AgentMonitorSettings:
     show_menu_bar_icon: bool = True
     # Draw the SidePulse Notch and animation previews as a flowing rainbow.
     rainbow_theme_enabled: bool = False
+    # Show the Mac's sound output on the LEDs while music plays.
+    music_spectrum_enabled: bool = False
 
     def transcript_enabled(self, provider: str) -> bool:
         if provider == "codex":
@@ -776,6 +778,9 @@ class AgentMonitorSettings:
     def with_rainbow_theme(self, enabled: bool) -> "AgentMonitorSettings":
         return replace(self, rainbow_theme_enabled=bool(enabled))
 
+    def with_music_spectrum(self, enabled: bool) -> "AgentMonitorSettings":
+        return replace(self, music_spectrum_enabled=bool(enabled))
+
     def with_virtual_status_device(self, enabled: bool) -> "AgentMonitorSettings":
         return replace(self, virtual_status_device_enabled=bool(enabled))
 
@@ -814,6 +819,7 @@ class AgentMonitorSettings:
             "sleep_prevention_policy": self.sleep_prevention_policy,
             "virtual_status_device_enabled": self.virtual_status_device_enabled,
             "rainbow_theme": self.rainbow_theme_enabled,
+            "music_spectrum": self.music_spectrum_enabled,
             "closed_lid_system_override_enabled": self.closed_lid_system_override_enabled,
             "lid_closed_animation": self.lid_closed_animation.to_dict(),
             "lid_open_animation": self.lid_open_animation.to_dict(),
@@ -957,6 +963,7 @@ def load_settings(path: Path | None = None) -> AgentMonitorSettings:
     return AgentMonitorSettings(
         show_menu_bar_icon=_bool_setting(data.get("show_menu_bar_icon"), True),
         rainbow_theme_enabled=_bool_setting(data.get("rainbow_theme"), False),
+        music_spectrum_enabled=_bool_setting(data.get("music_spectrum"), False),
         codex_transcripts_enabled=_bool_setting(transcript.get("codex"), False),
         claude_transcripts_enabled=_bool_setting(transcript.get("claude"), False),
         led_display=led_display,

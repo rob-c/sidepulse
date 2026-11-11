@@ -35,6 +35,11 @@ dependencies = [
     "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
     "pyobjc-framework-WebKit>=10; sys_platform == 'darwin'",
     "pyobjc-framework-ScriptingBridge>=10; sys_platform == 'darwin'",
+    # Music spectrum: system audio capture (ScreenCaptureKit, macOS 13+).
+    "pyobjc-framework-ScreenCaptureKit>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-CoreMedia>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-CoreAudio>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-libdispatch>=10; sys_platform == 'darwin'",
 ]
 
 [project.urls]

@@ -1891,6 +1891,7 @@ class AgentMonitorTests(unittest.TestCase):
             ensure_device_selection=lambda: None,
             last_led_error=None,
             device_errors={},
+            spectrum_driving=False,
             remote_led_program_by_device={},
             last_led_display_kind_by_device={},
             reset_led_controllers_for_device=lambda device_id: None,
@@ -1938,6 +1939,7 @@ class AgentMonitorTests(unittest.TestCase):
             ensure_device_selection=lambda: None,
             last_led_error=None,
             device_errors={},
+            spectrum_driving=False,
             remote_led_program_by_device={},
             last_led_display_kind_by_device={},
             reset_led_controllers_for_device=lambda device_id: None,
@@ -1981,6 +1983,7 @@ class AgentMonitorTests(unittest.TestCase):
             ensure_device_selection=lambda: None,
             last_led_error="old",
             device_errors={device.device_id: "old"},
+            spectrum_driving=False,
             last_led_display_kind_by_device={},
             reset_led_controllers_for_device=lambda device_id: None,
             active_led_display_kind_for_device=lambda _device, _battery: LED_DISPLAY_CUSTOM,
@@ -2026,6 +2029,7 @@ class AgentMonitorTests(unittest.TestCase):
             refresh_settings_window=lambda: None,
             refresh_=lambda sender: None,
             device_errors={},
+            spectrum_driving=False,
             last_led_error=None,
         )
         fake.clear_manual_device_display = lambda item: (
@@ -2068,6 +2072,7 @@ class AgentMonitorTests(unittest.TestCase):
         fake = SimpleNamespace(
             last_battery_snapshot=BatterySnapshot(percent=49, is_plugged=False),
             device_errors={},
+            spectrum_driving=False,
             last_led_error=None,
         )
 
